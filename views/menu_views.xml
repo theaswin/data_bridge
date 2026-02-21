@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- Root Menu -->
+    <menuitem id="menu_data_bridge_root"
+              name="Data Bridge"
+              web_icon="data_bridge,static/description/icon.png"
+              sequence="100"/>
+
+    <!-- Migration Methods Submenu -->
+    <menuitem id="menu_data_bridge_migrations"
+              name="Migrations"
+              parent="menu_data_bridge_root"
+              sequence="10"/>
+
+    <!-- Menu 1: API Migration -->
+    <menuitem id="menu_api_migration"
+              name="API Migration (From Old ERP)"
+              parent="menu_data_bridge_migrations"
+              action="action_api_migration"
+              sequence="10"/>
+
+    <!-- Menu 2: SQL File Migration -->
+    <menuitem id="menu_sql_migration"
+              name="SQL File Migration"
+              parent="menu_data_bridge_migrations"
+              action="action_sql_migration"
+              sequence="20"/>
+
+    <!-- Reports Submenu -->
+    <menuitem id="menu_data_bridge_reports"
+              name="Reports"
+              parent="menu_data_bridge_root"
+              sequence="50"/>
+
+    <menuitem id="menu_migration_logs"
+              name="Migration Logs"
+              parent="menu_data_bridge_reports"
+              action="action_migration_log"
+              sequence="10"/>
+
+</odoo>
