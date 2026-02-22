@@ -16,22 +16,22 @@ class ApiMigration(models.Model):
     _description = 'API Migration from Old ERP'
     _order = 'create_date desc'
 
-    name = fields.Char(string='Migration Name', required=True, copy=False)
+    name = fields.Char(string='Migration Name', required=True)
     
     # Connection Details
     erp_url = fields.Char(
-        string='Old ERP URL', required=True, copy=False,
+        string='Old ERP URL', required=True,
         help='URL of the old Odoo ERP (e.g., https://old-erp.example.com)')
     erp_db = fields.Char(
-        string='Database Name', required=True, copy=False,
+        string='Database Name', required=True,
         help='Database name of the old ERP')
     erp_username = fields.Char(
-        string='Username', required=True, copy=False,
+        string='Username', required=True,
         help='Login username (email) for the old ERP')
     erp_password = fields.Char(
-        string='Password', required=True, copy=False)
+        string='Password', required=True)
     erp_uid = fields.Integer(
-        string='User ID', readonly=True, copy=False,
+        string='User ID', readonly=True,
         help='Authenticated User ID (auto-filled after connection test)')
     migration_date = fields.Datetime(
         string='Migration Date', readonly=True, copy=False) 
@@ -45,10 +45,10 @@ class ApiMigration(models.Model):
     
     # Model Configuration
     source_model = fields.Char(
-        string='Source Model', required=True, copy=False,
+        string='Source Model', required=True,
         help='Model name in old ERP (e.g., res.partner, product.product)')
     destination_model = fields.Char(
-        string='Destination Model', required=True, copy=False,
+        string='Destination Model', required=True,
         help='Model name in current ERP (e.g., res.partner)')
     
     # Filters
@@ -83,8 +83,8 @@ class ApiMigration(models.Model):
     
     # Progress tracking
     progress = fields.Float(
-        string='Progress', default=0, readonly=True, copy=False,
-        help='Migration progress percentage')
+        string='Progress', compute='_compute_progress', store=False, copy=False,
+        digits=(16, 2), help='Migration progress percentage')
     current_batch = fields.Integer(
         string='Current Batch', default=0, readonly=True, copy=False)
     total_batches = fields.Integer(
@@ -112,7 +112,7 @@ class ApiMigration(models.Model):
     last_migration_date = fields.Datetime(
         string='Last Migration Date', readonly=True, copy=False)
     migration_duration = fields.Float(
-        string='Duration (seconds)', readonly=True, copy=False)
+        string='Duration (seconds)', compute='_compute_migration_duration', store=False, copy=False)
     records_per_second = fields.Float(
         string='Records/Second', readonly=True, digits=(10, 2), copy=False)
     
@@ -135,6 +135,22 @@ class ApiMigration(models.Model):
         'ir.model', string='Destination Model', copy=False)
 
         
+
+    @api.depends('migrator_ids.duration')
+    def _compute_migration_duration(self):
+        for record in self:
+            record.migration_duration = sum(record.migrator_ids.mapped('duration'))
+            
+    @api.depends('migrated_records', 'failed_records', 'skipped_records', 'total_source_records')
+    def _compute_progress(self):
+        for record in self:
+            if record.total_source_records > 0:
+                completed = record.total_source_records - record.failed_records
+                print("Completed", completed)
+                record.progress = (completed / record.total_source_records) * 100.0
+                print("Total =================",  (completed / record.total_source_records) * 100.0)
+            else:
+                record.progress = 0.0
 
     @api.depends('total_source_records', 'limit', 'batch_size')
     def _compute_total_batches(self):
@@ -230,6 +246,7 @@ class ApiMigration(models.Model):
             raise UserError(_('Connection failed: %(error)s', error=str(e)))
     
     def get_models_data(self):
+        self.ensure_one()
         url = self.erp_url
         db = self.erp_db
         username = self.erp_username
@@ -237,38 +254,118 @@ class ApiMigration(models.Model):
 
         try:
             print(f"Connecting to {url}...")
-            # Common endpoint (authentication)
-            common = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/common")
-
-            uid = common.authenticate(db, username, password, {})
+            common, models_proxy = self._get_xmlrpc_connection()
+            uid = self.erp_uid or common.authenticate(db, username, password, {})
 
             if not uid:
-                print("Authentication failed.")
-                return
+                raise UserError(_("Authentication failed."))
 
             print(f"Logged in. UID: {uid}")
 
-            # Object endpoint
-            models = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/object")
-
             print(f"Fetching count for {self.source_model}...")
-            partner_count = models.execute_kw(
-                db,
-                uid,
-                password,
-                self.source_model,
-                'search_count',
-                [[]]   # empty domain = all records
+            domain = safe_eval(self.domain_filter or '[]')
+            record_count = models_proxy.execute_kw(
+                db, uid, password,
+                self.source_model, 'search_count',
+                [domain]
             )
-            print(f"Total records found: {partner_count}")
+            print(f"Total records found: {record_count}")
 
             self.write({
-                'total_source_records': partner_count,
+                'erp_uid': uid,
+                'total_source_records': record_count,
                 'state': 'ready',
             })
+            
+            # Run field analysis automatically
+            self.action_analyze_fields()
 
         except Exception as e:
-            raise ValidationError("Failed To Fetch Table Details")
+            _logger.error("Failed to fetch model data: %s", str(e))
+            raise UserError(_("Failed to fetch model data: %s") % str(e))
+
+    def action_analyze_fields(self):
+        """Analyze fields in source and destination models to identify what can be migrated."""
+        self.ensure_one()
+        if not self.erp_uid:
+            raise UserError(_("Please test connection first."))
+            
+        try:
+            common, models_proxy = self._get_xmlrpc_connection()
+            
+            # 1. Get Source Fields Metadata
+            source_fields_all = models_proxy.execute_kw(
+                self.erp_db, self.erp_uid, self.erp_password,
+                self.source_model, 'fields_get',
+                [], {'attributes': ['type', 'store', 'string', 'required']}
+            )
+            
+            # 2. Get Destination Model
+            dest_model_name = self.destination_model_id.model or self.destination_model
+            if not dest_model_name:
+                raise UserError(_("Please specify a destination model."))
+            
+            if dest_model_name not in self.env:
+                raise UserError(_("Destination model %s not found in current ERP.") % dest_model_name)
+                
+            DestModel = self.env[dest_model_name]
+            dest_fields = DestModel._fields
+            
+            # 3. Identify Magic/System Fields to Always Exclude
+            magic_fields = {
+                'id', 'create_uid', 'write_uid', 'create_date', 'write_date', 
+                'display_name', '__last_update', 'xmlid'
+            }
+            
+            included = []
+            excluded = []
+            all_fields_info = []
+            
+            for f_name, info in sorted(source_fields_all.items()):
+                f_type = info.get('type')
+                is_stored = info.get('store', True)
+                f_label = info.get('string', f_name)
+                
+                info_str = f"{f_name} ({f_label}) [{f_type}]"
+                all_fields_info.append(info_str)
+                
+                # Exclusion criteria:
+                # - Is a magic field
+                # - Doesn't exist in destination
+                # - Is a relational field (M2O, O2M, M2M) - current limitation
+                # - Is not stored in source (computed/function field)
+                # - Is not writable in destination
+                
+                reason = ""
+                if f_name in magic_fields:
+                    reason = "System field"
+                elif f_name not in dest_fields:
+                    reason = "Missing in destination"
+                elif f_type in ('many2one', 'one2many', 'many2many', 'reference'):
+                    reason = f"Relational field ({f_type})"
+                elif not is_stored:
+                    reason = "Not stored in source"
+                elif not dest_fields[f_name].store or dest_fields[f_name].compute:
+                    # In Odoo 17+, we should check if it's computed and NOT stored
+                    if dest_fields[f_name].compute and not dest_fields[f_name].store:
+                        reason = "Computed/Read-only in destination"
+                
+                if reason:
+                    excluded.append(f"{info_str} - {reason}")
+                else:
+                    included.append(info_str)
+            
+            # Sync the models if they were different
+            self.write({
+                'all_source_fields': "\n".join(all_fields_info),
+                'included_fields': "\n".join(included),
+                'excluded_fields': "\n".join(excluded),
+                'fields_to_migrate': ",".join([f.split(' ')[0] for f in included]),
+                'destination_model': dest_model_name if not self.destination_model else self.destination_model
+            })
+            
+        except Exception as e:
+            raise UserError(_("Field Analysis Error: %s") % str(e))
 
     def load_steps(self):
         for rec in self:
@@ -311,6 +408,7 @@ class MigratorMigrator(models.Model):
     offset = fields.Integer(string='Offset', copy=False)
     data_range = fields.Char(string='Data Range', copy=False)
     duration = fields.Float(string='Duration (seconds)', copy=False)
+    progress = fields.Float(string='Progress (%)', digits=(16, 2), copy=False)
     is_done = fields.Boolean(string='Done', default=False, copy=False)
 
     def action_continue(self):
@@ -342,33 +440,35 @@ class MigratorMigrator(models.Model):
                 print("No records found in this range.")
                 return
 
-            # 2. Get Local Model & Common Fields
-            DestModel = self.env[migration.destination_model_id.model]
-            dest_fields_list = list(DestModel._fields.keys())
+            # 2. Get Local Model & Fields to Migrate
+            dest_model_name = migration.destination_model_id.model or migration.destination_model
+            if not dest_model_name:
+                raise UserError(_("Destination model not defined."))
             
-            # Fetch source fields once per batch or use parent's metadata if we had it
-            # To be safe and fix the "Expected Singleton" issue, we only want to fetch fields 
-            # that we actually need and exist on both sides.
-            print("Fetching source field metadata to avoid crashing on computed fields...")
-            source_fields_all = models_proxy.execute_kw(
-                migration.erp_db, uid, migration.erp_password,
-                migration.source_model, 'fields_get',
-                [], {'attributes': ['type', 'store']}
-            )
+            DestModel = self.env[dest_model_name]
             
-            # Only migrate fields that:
-            # - Exist in both source and destination
-            # - Are not relational (M2O, O2M, M2M) to keep it simple as requested
-            # - Are stored in source (to avoid broken computed fields on remote)
-            common_fields = [
-                f for f in source_fields_all 
-                if f in dest_fields_list 
-                and f != 'id'
-                and source_fields_all[f].get('type') not in ('many2one', 'one2many', 'many2many')
-                and source_fields_all[f].get('store', True) # Prefer stored fields
-            ]
+            # Use pre-analyzed fields if available, otherwise recalculate
+            if migration.fields_to_migrate:
+                common_fields = migration.fields_to_migrate.split(',')
+            else:
+                print("Fields not pre-analyzed. Identifying common fields dynamically...")
+                dest_fields_list = list(DestModel._fields.keys())
+                source_fields_all = models_proxy.execute_kw(
+                    migration.erp_db, uid, migration.erp_password,
+                    migration.source_model, 'fields_get',
+                    [], {'attributes': ['type', 'store']}
+                )
+                
+                magic_fields = {'id', 'create_uid', 'write_uid', 'create_date', 'write_date', 'display_name', '__last_update'}
+                common_fields = [
+                    f for f in source_fields_all 
+                    if f in dest_fields_list 
+                    and f not in magic_fields
+                    and source_fields_all[f].get('type') not in ('many2one', 'one2many', 'many2many', 'reference', 'binary')
+                    and source_fields_all[f].get('store', True)
+                ]
             
-            print(f"Common stored fields identified: {len(common_fields)}")
+            print(f"Common fields identified: {len(common_fields)}")
             
             records = []
             try:
@@ -395,6 +495,9 @@ class MigratorMigrator(models.Model):
                             records.append(record_data[0])
                     except Exception as single_err:
                         print(f"\nFailed to read record {rid}: {single_err}")
+                        error_msg = f"Failed to read record from Old ERP: ID {rid} - Error: {single_err}"
+                        migration.notes = (migration.notes or "") + f"\n{error_msg}"
+                        migration.failed_records += 1
                 print("\nOne-by-one reading completed.")
 
             if not records:
@@ -403,22 +506,43 @@ class MigratorMigrator(models.Model):
                 
             print(f"Fetched {len(records)} records. Creating locally...")
             
-            # 3. Creation
+            # 3. Creation (Bulk or Individual depends on implementation preference, 
+            # but here we follow the existing pattern with savepoints per record)
             count = 0
+            DestModel = DestModel.with_context(
+                tracking_disable=True,
+                mail_notrack=True,
+                mail_create_nolog=True,
+                import_file=True,
+            )
+            
             for i, vals in enumerate(records):
                 print(f"Processing record {i+1}/{len(records)} (Remote ID: {vals.get('id')})...", end="\r")
                 new_vals = {f: vals[f] for f in common_fields if f in vals}
                 
                 try:
-                    DestModel.create(new_vals)
+                    with self.env.cr.savepoint():
+                        DestModel.create(new_vals)
                     count += 1
+                    migration.migrated_records += 1
                 except Exception as e:
                     print(f"\nFailed to create local record for Remote ID {vals.get('id')}: {e}")
+                    
+                    record_name = vals.get('name') or vals.get('display_name') or f"ID: {vals.get('id')}"
+                    error_msg = f"Failed to migrate record: {record_name} (Remote ID: {vals.get('id')}) - Error: {e}"
+                    
+                    if migration.notes:
+                        migration.notes += f"\n{error_msg}"
+                    else:
+                        migration.notes = error_msg
+                    migration.failed_records += 1
+                        
                     if not migration.skip_errors:
                         raise
             
             print(f"\nBatch {self.batch} completed. Successfully created {count} records.")
             self.duration = time.time() - start_time
+            self.progress = (count / self.limit) * 100 if self.limit else 0.0
             print(f"Duration: {self.duration:.2f} seconds.")
             self.is_done = True
             
