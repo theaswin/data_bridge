@@ -4,7 +4,7 @@
     <!-- Root Menu -->
     <menuitem id="menu_data_bridge_root"
               name="Data Bridge"
-              web_icon="data_bridge,static/description/icon.png"
+              web_icon="data_bridge,static/description/icon.svg"
               sequence="100"/>
 
     <!-- Migration Methods Submenu -->
@@ -20,23 +20,24 @@
               action="action_api_migration"
               sequence="10"/>
 
-    <!-- Menu 2: SQL File Migration -->
+    <menuitem id="menu_migrator_batch"
+              name="Batch Details"
+              parent="menu_data_bridge_migrations"
+              action="action_migrator_batch"
+              sequence="20"/>
+
+    <!-- Menu 2: SQL File Migration (Removed as requested)
     <menuitem id="menu_sql_migration"
               name="SQL File Migration"
               parent="menu_data_bridge_migrations"
               action="action_sql_migration"
               sequence="20"/>
+    -->
 
     <!-- Reports Submenu -->
     <menuitem id="menu_data_bridge_reports"
               name="Reports"
               parent="menu_data_bridge_root"
               sequence="50"/>
-
-    <menuitem id="menu_migration_logs"
-              name="Migration Logs"
-              parent="menu_data_bridge_reports"
-              action="action_migration_log"
-              sequence="10"/>
 
 </odoo>

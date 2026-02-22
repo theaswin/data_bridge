@@ -1,6 +1,6 @@
 {
     'name': 'Data Bridge',
-    'version': '16.0.2.0.0',
+    'version': '19.0.1.0.0',
     'category': 'Tools',
     'summary': 'High-performance data migration from external ERP or SQL files',
     'description': """
@@ -43,8 +43,7 @@ Key Features:
     'data': [
         'security/ir.model.access.csv',
         'views/api_migration_views.xml',
-        'views/sql_migration_views.xml',
-        'views/migration_log_views.xml',
+        'views/migrator_views.xml',
         'views/menu_views.xml',
     ],
     'assets': {},

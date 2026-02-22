@@ -1,7 +1,3 @@
 id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
 access_data_bridge_api_migration_system,data.bridge.api.migration.system,model_data_bridge_api_migration,base.group_system,1,1,1,1
-access_data_bridge_api_migration_user,data.bridge.api.migration.user,model_data_bridge_api_migration,base.group_user,1,0,0,0
-access_data_bridge_sql_migration_system,data.bridge.sql.migration.system,model_data_bridge_sql_migration,base.group_system,1,1,1,1
-access_data_bridge_sql_migration_user,data.bridge.sql.migration.user,model_data_bridge_sql_migration,base.group_user,1,0,0,0
-access_data_bridge_migration_log_system,data.bridge.migration.log.system,model_data_bridge_migration_log,base.group_system,1,1,1,1
-access_data_bridge_migration_log_user,data.bridge.migration.log.user,model_data_bridge_migration_log,base.group_user,1,0,0,0
+access_migrator_migrator,migrator.migrator,model_migrator_migrator,,1,1,1,1
