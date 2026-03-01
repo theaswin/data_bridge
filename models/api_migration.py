@@ -472,13 +472,20 @@ class MigratorMigrator(models.Model):
             if not field_mappings:
                 raise UserError(_("No field mappings configured. Please map at least one field in the Field Mapping tab."))
             
-            # Build mapping: source_field_name -> destination_field_name
-            field_map = {m.field_name: m.restore_to_id.name for m in field_mappings}
+            # Build mapping with type info: source_field_name -> {dest_field, src_type, dest_type, dest_relation}
+            field_map = {}
+            for m in field_mappings:
+                field_map[m.field_name] = {
+                    'dest_field': m.restore_to_id.name,
+                    'src_type': m.field_type,
+                    'dest_type': m.restore_to_id.ttype,
+                    'dest_relation': m.restore_to_id.relation,  # Related model for Many2one
+                }
             source_fields = list(field_map.keys())
             
             print(f"Field mappings configured: {len(field_map)}")
-            for src, dest in field_map.items():
-                print(f"  {src} -> {dest}")
+            for src, info in field_map.items():
+                print(f"  {src} ({info['src_type']}) -> {info['dest_field']} ({info['dest_type']})")
             
             print("Connecting to source ERP...")
             common, models_proxy = migration._get_xmlrpc_connection()
@@ -552,14 +559,75 @@ class MigratorMigrator(models.Model):
                 import_file=True,
             )
             
+            # Cache for Many2one lookups to avoid repeated searches
+            m2o_cache = {}
+            
+            # Get destination model fields info for relation lookup
+            dest_fields_info = DestModel._fields
+            
             for i, vals in enumerate(records):
                 print(f"Processing record {i+1}/{len(records)} (Remote ID: {vals.get('id')})...", end="\r")
                 
                 # Map source fields to destination fields
                 new_vals = {}
-                for src_field, dest_field in field_map.items():
-                    if src_field in vals and vals[src_field] is not False:
-                        new_vals[dest_field] = vals[src_field]
+                for src_field, info in field_map.items():
+                    if src_field not in vals or vals[src_field] is False:
+                        continue
+                    
+                    src_value = vals[src_field]
+                    dest_field = info['dest_field']
+                    src_type = info['src_type']
+                    dest_type = info['dest_type']
+                    
+                    # Handle Many2one fields
+                    if src_type == 'many2one' and dest_type == 'many2one':
+                        # Many2one value from old ERP is [id, name] or just id
+                        m2o_name = None
+                        if isinstance(src_value, (list, tuple)) and len(src_value) >= 2:
+                            m2o_name = src_value[1]
+                        elif isinstance(src_value, str):
+                            m2o_name = src_value
+                        else:
+                            print(f"\n  Skipping {src_field}: unexpected value format {type(src_value)}")
+                            continue
+                        
+                        if not m2o_name:
+                            continue
+                        
+                        # Get the related model from destination field definition
+                        if dest_field not in dest_fields_info:
+                            print(f"\n  Skipping {src_field}: dest field '{dest_field}' not found in model")
+                            continue
+                        
+                        dest_field_obj = dest_fields_info[dest_field]
+                        related_model = getattr(dest_field_obj, 'comodel_name', None)
+                        
+                        if not related_model or related_model not in self.env:
+                            print(f"\n  Skipping {src_field}: related model '{related_model}' not found")
+                            continue
+                        
+                        # Use cache to avoid repeated searches
+                        cache_key = (related_model, m2o_name)
+                        if cache_key in m2o_cache:
+                            matched_id = m2o_cache[cache_key]
+                        else:
+                            # Search for matching record by name in related model
+                            RelatedModel = self.env[related_model]
+                            matched_record = RelatedModel.search([('name', '=', m2o_name)], limit=1)
+                            matched_id = matched_record.id if matched_record else False
+                            m2o_cache[cache_key] = matched_id
+                            
+                            if matched_id:
+                                print(f"\n  Matched {src_field} -> {dest_field}: '{m2o_name}' found in {related_model} (ID: {matched_id})")
+                            else:
+                                print(f"\n  No match for {src_field}: '{m2o_name}' not found in {related_model}")
+                        
+                        if matched_id:
+                            new_vals[dest_field] = matched_id
+                        # If no match, skip this field (don't add to new_vals)
+                    else:
+                        # Non-relational fields - direct copy
+                        new_vals[dest_field] = src_value
                 
                 if not new_vals:
                     print(f"\nSkipping record {vals.get('id')} - no valid field values")
