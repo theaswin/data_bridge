@@ -137,20 +137,22 @@
                     </group>
                     
                     <notebook>
-                    <page string="Field Mapping" name="field_mapping">
+                    <page string="Field Mapping" name="field_mapping" invisible="state == 'draft'">
                             <div class="alert alert-info mb-3">
                                 <i class="fa fa-info-circle"/> All fields available in the source ERP model. Map them to destination fields:
                             </div>
                             <field name="field_mapping_ids" nolabel="1">
                                 <list editable="bottom">
                                     <field name="field_name" readonly="1"/>
+                                    <field name="field_type" readonly="1" string="Type"/>
                                     <field name="restore_to_id" 
                                            domain="[('model_id', '=', parent.destination_model_id)]"
                                            options="{'no_create': True}"/>
+                                    <field name="restore_to_type" readonly="1" string="Type"/>
                                 </list>
                             </field>
                         </page>
-                        <page string="Batches/Migrators" name="migrators">
+                        <page string="Batches/Migrators" name="migrators" invisible="state == 'draft'">
                             <field name="migrator_ids" nolabel="1">
                                 <list editable="bottom">
                                     <field name="batch" string="No"/>
@@ -181,7 +183,7 @@
                             </div>
                             <field name="excluded_fields" readonly="1" nolabel="1"/>
                         </page>
-                        <page string="Notes" name="notes">
+                        <page string="Notes" invisible="state == 'draft'" name="notes">
                             <field name="notes" placeholder="Additional notes..."/>
                         </page>
                     </notebook>

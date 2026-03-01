@@ -48,7 +48,7 @@ class ApiMigration(models.Model):
         string='Source Model', required=True,
         help='Model name in old ERP (e.g., res.partner, product.product)')
     destination_model = fields.Char(
-        string='Destination Model', required=True,
+        string='Destination Model',
         help='Model name in current ERP (e.g., res.partner)')
     
     # Filters
@@ -363,8 +363,10 @@ class ApiMigration(models.Model):
             # Create field mapping records for all source fields
             field_mapping_vals = []
             for f_name in sorted(source_fields_all.keys()):
+                f_type = source_fields_all[f_name].get('type', '')
                 field_mapping_vals.append((0, 0, {
                     'field_name': f_name,
+                    'field_type': f_type,
                     'restore_to_id': False,
                 }))
             
@@ -613,7 +615,32 @@ class DataBridgeFieldMapping(models.Model):
         'data.bridge.api.migration', string='Migration',
         ondelete='cascade', required=True)
     field_name = fields.Char(string='Field Name', required=True)
+    field_type = fields.Char(string='Field Type', readonly=True,
+        help='Type of the field in the source/old ERP')
     restore_to_id = fields.Many2one(
         'ir.model.fields', string='Restore To',
         domain="[('model_id', '=', parent.destination_model_id)]",
         help='Field in destination model to map this source field to')
+    restore_to_type = fields.Selection(
+        related='restore_to_id.ttype', string='Restore Type', readonly=True,
+        help='Type of the destination field')
+
+    @api.onchange('restore_to_id')
+    def _onchange_restore_to_id(self):
+        if self.restore_to_id and self.field_type:
+            dest_type = self.restore_to_id.ttype
+            if self.field_type != dest_type:
+                self.restore_to_id = False
+                return {
+                    'warning': {
+                        'title': _('Type Mismatch'),
+                        'message': _(
+                            'Field types are not compatible!\n'
+                            'Source field "%(source)s" has type "%(source_type)s" '
+                            'but destination field has type "%(dest_type)s".',
+                            source=self.field_name,
+                            source_type=self.field_type,
+                            dest_type=dest_type
+                        ),
+                    }
+                }
