@@ -129,6 +129,9 @@ class ApiMigration(models.Model):
     all_source_fields = fields.Text(
         string='All Fields in Old ERP', readonly=True, copy=False,
         help='List of all fields available in the source model of the old ERP')
+    field_mapping_ids = fields.One2many(
+        'data.bridge.field.mapping', 'migration_id', string='Field Mappings',
+        copy=False, help='Mapping of source fields to destination fields')
     batch = fields.Integer(string="Batch", default=0, copy=False)
     duration = fields.Float(string="Duration", default=0, copy=False)
     destination_model_id = fields.Many2one(
@@ -274,7 +277,6 @@ class ApiMigration(models.Model):
             self.write({
                 'erp_uid': uid,
                 'total_source_records': record_count,
-                'state': 'ready',
             })
             
             # Run field analysis automatically
@@ -355,13 +357,25 @@ class ApiMigration(models.Model):
                 else:
                     included.append(info_str)
             
+            # Clear existing field mappings
+            self.field_mapping_ids.unlink()
+            
+            # Create field mapping records for all source fields
+            field_mapping_vals = []
+            for f_name in sorted(source_fields_all.keys()):
+                field_mapping_vals.append((0, 0, {
+                    'field_name': f_name,
+                    'restore_to_id': False,
+                }))
+            
             # Sync the models if they were different
             self.write({
                 'all_source_fields': "\n".join(all_fields_info),
                 'included_fields': "\n".join(included),
                 'excluded_fields': "\n".join(excluded),
                 'fields_to_migrate': ",".join([f.split(' ')[0] for f in included]),
-                'destination_model': dest_model_name if not self.destination_model else self.destination_model
+                'destination_model': dest_model_name if not self.destination_model else self.destination_model,
+                'field_mapping_ids': field_mapping_vals,
             })
             
         except Exception as e:
@@ -396,6 +410,33 @@ class ApiMigration(models.Model):
 
 
 
+    def action_ready(self):
+        for rec in self:
+            self.state = 'ready'
+
+            # Delete only this migration's batches
+            self.env['migrator.migrator'].search([
+                ('migration_id', '=', rec.id)
+            ]).unlink()
+
+            print(f"Generating {rec.total_batches} batch lines...")
+            for i in range(rec.total_batches):
+
+                offset = i * rec.batch_size
+                limit = rec.batch_size
+
+                start = offset + 1
+                end = offset + limit
+
+                print(f"Creating Batch {i+1}: Offset {offset}, Limit {limit}, Range {start}-{end}")
+                self.env['migrator.migrator'].create({
+                    'migration_id': rec.id,
+                    'batch': i + 1,
+                    'offset': offset,
+                    'limit': limit,
+                    'data_range': f'{start} - {end}',
+            })
+            print("Batch generation completed.")
 
 
 class MigratorMigrator(models.Model):
@@ -423,52 +464,47 @@ class MigratorMigrator(models.Model):
         
         start_time = time.time()
         try:
+            # Get field mappings (only mapped fields will be migrated)
+            field_mappings = migration.field_mapping_ids.filtered(lambda m: m.restore_to_id)
+            
+            if not field_mappings:
+                raise UserError(_("No field mappings configured. Please map at least one field in the Field Mapping tab."))
+            
+            # Build mapping: source_field_name -> destination_field_name
+            field_map = {m.field_name: m.restore_to_id.name for m in field_mappings}
+            source_fields = list(field_map.keys())
+            
+            print(f"Field mappings configured: {len(field_map)}")
+            for src, dest in field_map.items():
+                print(f"  {src} -> {dest}")
+            
             print("Connecting to source ERP...")
             common, models_proxy = migration._get_xmlrpc_connection()
             uid = migration.erp_uid
             
             # 1. Fetch Records from Old ERP
             print(f"Searching for records in {migration.source_model}...")
+            domain = safe_eval(migration.domain_filter or '[]')
             ids = models_proxy.execute_kw(
                 migration.erp_db, uid, migration.erp_password,
                 migration.source_model, 'search',
-                [[]], # Empty domain for now
+                [domain],
                 {'offset': self.offset, 'limit': self.limit}
             )
             
             if not ids:
                 print("No records found in this range.")
+                self.is_done = True
                 return
 
-            # 2. Get Local Model & Fields to Migrate
+            # 2. Get Local Model
             dest_model_name = migration.destination_model_id.model or migration.destination_model
             if not dest_model_name:
                 raise UserError(_("Destination model not defined."))
             
             DestModel = self.env[dest_model_name]
             
-            # Use pre-analyzed fields if available, otherwise recalculate
-            if migration.fields_to_migrate:
-                common_fields = migration.fields_to_migrate.split(',')
-            else:
-                print("Fields not pre-analyzed. Identifying common fields dynamically...")
-                dest_fields_list = list(DestModel._fields.keys())
-                source_fields_all = models_proxy.execute_kw(
-                    migration.erp_db, uid, migration.erp_password,
-                    migration.source_model, 'fields_get',
-                    [], {'attributes': ['type', 'store']}
-                )
-                
-                magic_fields = {'id', 'create_uid', 'write_uid', 'create_date', 'write_date', 'display_name', '__last_update'}
-                common_fields = [
-                    f for f in source_fields_all 
-                    if f in dest_fields_list 
-                    and f not in magic_fields
-                    and source_fields_all[f].get('type') not in ('many2one', 'one2many', 'many2many', 'reference', 'binary')
-                    and source_fields_all[f].get('store', True)
-                ]
-            
-            print(f"Common fields identified: {len(common_fields)}")
+            print(f"Fetching {len(ids)} records with fields: {source_fields}")
             
             records = []
             try:
@@ -477,11 +513,10 @@ class MigratorMigrator(models.Model):
                     migration.erp_db, uid, migration.erp_password,
                     migration.source_model, 'read',
                     [ids],
-                    {'fields': common_fields}
+                    {'fields': source_fields}
                 )
             except Exception as read_err:
                 print(f"Batch read failed: {read_err}. Falling back to one-by-one reading...")
-                # Fallback: Read records one by one if remote has broken computed fields
                 for i, rid in enumerate(ids):
                     print(f"Reading record {i+1}/{len(ids)} (ID: {rid})...", end="\r")
                     try:
@@ -489,7 +524,7 @@ class MigratorMigrator(models.Model):
                             migration.erp_db, uid, migration.erp_password,
                             migration.source_model, 'read',
                             [[rid]],
-                            {'fields': common_fields}
+                            {'fields': source_fields}
                         )
                         if record_data:
                             records.append(record_data[0])
@@ -506,8 +541,7 @@ class MigratorMigrator(models.Model):
                 
             print(f"Fetched {len(records)} records. Creating locally...")
             
-            # 3. Creation (Bulk or Individual depends on implementation preference, 
-            # but here we follow the existing pattern with savepoints per record)
+            # 3. Create records in destination model
             count = 0
             DestModel = DestModel.with_context(
                 tracking_disable=True,
@@ -518,7 +552,17 @@ class MigratorMigrator(models.Model):
             
             for i, vals in enumerate(records):
                 print(f"Processing record {i+1}/{len(records)} (Remote ID: {vals.get('id')})...", end="\r")
-                new_vals = {f: vals[f] for f in common_fields if f in vals}
+                
+                # Map source fields to destination fields
+                new_vals = {}
+                for src_field, dest_field in field_map.items():
+                    if src_field in vals and vals[src_field] is not False:
+                        new_vals[dest_field] = vals[src_field]
+                
+                if not new_vals:
+                    print(f"\nSkipping record {vals.get('id')} - no valid field values")
+                    migration.skipped_records += 1
+                    continue
                 
                 try:
                     with self.env.cr.savepoint():
@@ -559,3 +603,17 @@ class MigratorMigrator(models.Model):
             
         except Exception as e:
             raise UserError(_("Migration Error: %s") % str(e))
+
+
+class DataBridgeFieldMapping(models.Model):
+    _name = 'data.bridge.field.mapping'
+    _description = 'Field Mapping for Migration'
+
+    migration_id = fields.Many2one(
+        'data.bridge.api.migration', string='Migration',
+        ondelete='cascade', required=True)
+    field_name = fields.Char(string='Field Name', required=True)
+    restore_to_id = fields.Many2one(
+        'ir.model.fields', string='Restore To',
+        domain="[('model_id', '=', parent.destination_model_id)]",
+        help='Field in destination model to map this source field to')
