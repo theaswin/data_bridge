@@ -13,9 +13,14 @@
                             invisible="state not in ['draft', 'error']"
                             icon="fa-plug"/>
                     <button name="get_models_data" type="object"
-                            string="1. Get Model Data & Analyze" class="btn-primary"
+                            string="1. Get Model Data &amp; Analyze" class="btn-primary"
                             invisible="state != 'connected'"
                             icon="fa-search"/>
+
+                    <button name="action_ready" type="object"
+                            string="Ready" class="btn-primary"
+                            invisible="state != 'connected'"
+                            icon="fa-check"/>
                     <button name="action_analyze_fields" type="object"
                             string="Re-Analyze Fields" class="btn-secondary"
                             invisible="state not in ['ready', 'running', 'done']"
@@ -124,11 +129,10 @@
 
                             <field name="skip_errors"/>
                         </group>
-                        <group string="Statistics">
+                        <group string="Statistics" invisible="not total_source_records">
                             <field name="total_source_records"/>
                             <field name="total_batches"/>
-                            <!-- <field name="last_migration_date"/> -->
-                            <field name="migration_duration" widget="float_time"/>
+                            <field name="migration_duration" widget="float_time" />
                         </group>
                     </group>
                     
