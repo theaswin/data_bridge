@@ -613,14 +613,35 @@ class MigratorMigrator(models.Model):
                         else:
                             # Search for matching record by name in related model
                             RelatedModel = self.env[related_model]
-                            matched_record = RelatedModel.search([('name', '=', m2o_name)], limit=1)
-                            matched_id = matched_record.id if matched_record else False
-                            m2o_cache[cache_key] = matched_id
                             
-                            if matched_id:
-                                print(f"\n  Matched {src_field} -> {dest_field}: '{m2o_name}' found in {related_model} (ID: {matched_id})")
-                            else:
-                                print(f"\n  No match for {src_field}: '{m2o_name}' not found in {related_model}")
+                            # Clean up name for better matching
+                            search_name = m2o_name.strip() if isinstance(m2o_name, str) else m2o_name
+                            
+                            # Use sudo to bypass potential access restrictions during migration
+                            # Search in both active and archived records
+                            search_domain = [
+                                '|', ('name', '=', search_name), ('display_name', '=', search_name),
+                                ('active', 'in', [True, False])
+                            ]
+                            
+                            # If the model doesn't have 'active' field, remove that part of domain
+                            if 'active' not in RelatedModel._fields:
+                                search_domain = ['|', ('name', '=', search_name), ('display_name', '=', search_name)]
+                                
+                            matched_record = RelatedModel.sudo().search(search_domain, limit=1)
+                            matched_id = matched_record.id if matched_record else False
+                            
+                            # If no match found, handle based on skip_errors setting
+                            if not matched_id:
+                                error_msg = f"No match found for {src_field}: '{m2o_name}' not found in {related_model}"
+                                if migration.skip_errors:
+                                    migration.notes = (migration.notes or "") + f"\n{error_msg}"
+                                    print(f"\n  {error_msg} - Skipping field")
+                                    matched_id = False
+                                else:
+                                    raise ValidationError(_(f"\nMigration Error: \n  {error_msg}"))
+                            
+                            m2o_cache[cache_key] = matched_id
                         
                         if matched_id:
                             new_vals[dest_field] = matched_id

@@ -127,7 +127,7 @@
                             <field name="batch_size" readonly="state == 'ready'"/>
                             <!-- <field name="offset"/> -->
 
-                            <field name="skip_errors" readonly="1"/>
+                            <field name="skip_errors" readonly="0"/>
                         </group>
                         <group string="Statistics" invisible="not total_source_records">
                             <field name="total_source_records"/>
