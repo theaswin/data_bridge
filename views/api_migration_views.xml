@@ -143,7 +143,8 @@
                             </div>
                             <field name="field_mapping_ids" nolabel="1">
                                 <list editable="bottom">
-                                    <field name="field_name" readonly="1"/>
+                                    <field name="field_name" optional="hide" readonly="1"/>
+                                    <field name="field_label" readonly="1"/>
                                     <field name="field_type" readonly="1" string="Type"/>
                                     <field name="restore_to_id" 
                                            domain="[('model_id', '=', parent.destination_model_id)]"
@@ -162,9 +163,12 @@
                                     <field name="duration" widget="float_time"/>
                                     <field name="progress" widget="progressbar"/>
                                     <field name="is_done" column_invisible="True"/>
+                                    <!-- <button name="action_continue" type="object" 
+                                            string="Continue" class="btn-success"
+                                            icon="fa-play" invisible="is_done"/> -->
                                     <button name="action_continue" type="object" 
                                             string="Continue" class="btn-success"
-                                            icon="fa-play" invisible="is_done"/>
+                                            icon="fa-play" />
                                 </list>
                             </field>
                         </page>

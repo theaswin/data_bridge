@@ -12,9 +12,8 @@
                 <field name="limit"/>
                 <field name="offset"/>
                 <field name="duration" widget="float_time"/>
-                <button name="action_continue" type="object" 
-                        string="Continue" class="btn-success"
-                        icon="fa-play"/>
+                <field name="progress" widget="progressbar" 
+                                       options="{'editable': false}"/>
             </list>
         </field>
     </record>
@@ -25,7 +24,7 @@
         <field name="model">migrator.migrator</field>
         <field name="arch" type="xml">
             <form string="Batch Detail">
-                <sheet>
+                <sheet >
                     <group>
                         <group>
                             <field name="migration_id"/>

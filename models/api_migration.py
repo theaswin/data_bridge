@@ -67,7 +67,7 @@ class ApiMigration(models.Model):
         string='Batch Size', default=500, copy=False,
         help='Records to process per batch (recommended: 500-1000 for large datasets)')
     skip_errors = fields.Boolean(
-        string='Skip Errors & Continue', default=True, copy=False,
+        string='Skip Errors & Continue', default=False, copy=False,
         help='Continue migration even if some records fail')
     
     # Status
@@ -286,6 +286,15 @@ class ApiMigration(models.Model):
             _logger.error("Failed to fetch model data: %s", str(e))
             raise UserError(_("Failed to fetch model data: %s") % str(e))
 
+
+
+    def action_try_map(self):
+        pass
+        
+        
+
+
+
     def action_analyze_fields(self):
         """Analyze fields in source and destination models to identify what can be migrated."""
         self.ensure_one()
@@ -362,13 +371,23 @@ class ApiMigration(models.Model):
             
             # Create field mapping records for all source fields
             field_mapping_vals = []
+
             for f_name in sorted(source_fields_all.keys()):
-                f_type = source_fields_all[f_name].get('type', '')
+                field_info = source_fields_all[f_name]
+
+                f_type = field_info.get('type', '')
+                f_string = field_info.get('string', '')   # 👈 display name in view
+
                 field_mapping_vals.append((0, 0, {
                     'field_name': f_name,
+                    'field_label': f_string,   # 👈 store view name
                     'field_type': f_type,
                     'restore_to_id': False,
                 }))
+
+            
+            # print("==========================",sorted(source_fields_all.keys()))
+            # sfa
             
             # Sync the models if they were different
             self.write({
@@ -458,242 +477,235 @@ class MigratorMigrator(models.Model):
         """Execute the migration for this specific batch."""
         self.ensure_one()
         migration = self.migration_id
+
         if not migration:
             return
-            
-        print(f"=== Starting Migration Batch {self.batch} ===")
-        print(f"Offset: {self.offset}, Limit: {self.limit}, Range: {self.data_range}")
-        
+
+        import time
+        from odoo.exceptions import UserError
+        from odoo.tools.safe_eval import safe_eval
+
         start_time = time.time()
+
         try:
-            # Get field mappings (only mapped fields will be migrated)
+            # ----------------------------------------
+            # ✅ FIELD MAPPING
+            # ----------------------------------------
             field_mappings = migration.field_mapping_ids.filtered(lambda m: m.restore_to_id)
-            
+
             if not field_mappings:
-                raise UserError(_("No field mappings configured. Please map at least one field in the Field Mapping tab."))
-            
-            # Build mapping with type info: source_field_name -> {dest_field, src_type, dest_type, dest_relation}
+                raise UserError("No field mappings configured.")
+
             field_map = {}
             for m in field_mappings:
                 field_map[m.field_name] = {
                     'dest_field': m.restore_to_id.name,
                     'src_type': m.field_type,
                     'dest_type': m.restore_to_id.ttype,
-                    'dest_relation': m.restore_to_id.relation,  # Related model for Many2one
                 }
+
             source_fields = list(field_map.keys())
-            
-            print(f"Field mappings configured: {len(field_map)}")
-            for src, info in field_map.items():
-                print(f"  {src} ({info['src_type']}) -> {info['dest_field']} ({info['dest_type']})")
-            
-            print("Connecting to source ERP...")
+
+            # ----------------------------------------
+            # ✅ CONNECT XMLRPC
+            # ----------------------------------------
             common, models_proxy = migration._get_xmlrpc_connection()
             uid = migration.erp_uid
-            
-            # 1. Fetch Records from Old ERP
-            print(f"Searching for records in {migration.source_model}...")
+
             domain = safe_eval(migration.domain_filter or '[]')
+
             ids = models_proxy.execute_kw(
                 migration.erp_db, uid, migration.erp_password,
                 migration.source_model, 'search',
                 [domain],
                 {'offset': self.offset, 'limit': self.limit}
             )
-            
+
             if not ids:
-                print("No records found in this range.")
                 self.is_done = True
                 return
 
-            # 2. Get Local Model
-            dest_model_name = migration.destination_model_id.model or migration.destination_model
-            if not dest_model_name:
-                raise UserError(_("Destination model not defined."))
-            
-            DestModel = self.env[dest_model_name]
-            
-            print(f"Fetching {len(ids)} records with fields: {source_fields}")
-            
-            records = []
-            try:
-                print(f"Attempting batch read of {len(ids)} records...")
-                records = models_proxy.execute_kw(
-                    migration.erp_db, uid, migration.erp_password,
-                    migration.source_model, 'read',
-                    [ids],
-                    {'fields': source_fields}
-                )
-            except Exception as read_err:
-                print(f"Batch read failed: {read_err}. Falling back to one-by-one reading...")
-                for i, rid in enumerate(ids):
-                    print(f"Reading record {i+1}/{len(ids)} (ID: {rid})...", end="\r")
-                    try:
-                        record_data = models_proxy.execute_kw(
-                            migration.erp_db, uid, migration.erp_password,
-                            migration.source_model, 'read',
-                            [[rid]],
-                            {'fields': source_fields}
-                        )
-                        if record_data:
-                            records.append(record_data[0])
-                    except Exception as single_err:
-                        print(f"\nFailed to read record {rid}: {single_err}")
-                        error_msg = f"Failed to read record from Old ERP: ID {rid} - Error: {single_err}"
-                        migration.notes = (migration.notes or "") + f"\n{error_msg}"
-                        migration.failed_records += 1
-                print("\nOne-by-one reading completed.")
+            # ----------------------------------------
+            # ✅ FETCH RECORDS
+            # ----------------------------------------
+            records = models_proxy.execute_kw(
+                migration.erp_db, uid, migration.erp_password,
+                migration.source_model, 'read',
+                [ids],
+                {'fields': source_fields}
+            )
 
             if not records:
-                print("No record data could be retrieved.")
                 return
-                
-            print(f"Fetched {len(records)} records. Creating locally...")
-            
-            # 3. Create records in destination model
-            count = 0
-            DestModel = DestModel.with_context(
+
+            # ----------------------------------------
+            # ✅ DEST MODEL
+            # ----------------------------------------
+            dest_model_name = migration.destination_model_id.model or migration.destination_model
+
+            if not dest_model_name:
+                raise UserError("Destination model not defined.")
+
+            DestModel = self.env[dest_model_name].with_context(
                 tracking_disable=True,
                 mail_notrack=True,
                 mail_create_nolog=True,
                 import_file=True,
             )
-            
-            # Cache for Many2one lookups to avoid repeated searches
-            m2o_cache = {}
-            
-            # Get destination model fields info for relation lookup
-            dest_fields_info = DestModel._fields
-            
-            for i, vals in enumerate(records):
-                print(f"Processing record {i+1}/{len(records)} (Remote ID: {vals.get('id')})...", end="\r")
-                
-                # Map source fields to destination fields
+
+            # ----------------------------------------
+            # ✅ ID MAP (CRITICAL)
+            # ----------------------------------------
+            partner_map = {}  # old_id -> new_id
+
+            # ----------------------------------------
+            # ✅ SORT (PARENT FIRST)
+            # ----------------------------------------
+            records = sorted(records, key=lambda r: not r.get('parent_id'))
+
+            count = 0
+
+            # ----------------------------------------
+            # 🔁 LOOP RECORDS
+            # ----------------------------------------
+            for vals in records:
+                old_id = vals.get('id')
                 new_vals = {}
+
                 for src_field, info in field_map.items():
-                    if src_field not in vals or vals[src_field] is False:
+
+                    if src_field not in vals or vals[src_field] in [False, None]:
                         continue
-                    
+
                     src_value = vals[src_field]
                     dest_field = info['dest_field']
                     src_type = info['src_type']
                     dest_type = info['dest_type']
-                    
-                    # Handle Many2one fields
+
+                    print(f"DEBUG → {src_field}: {src_value} ({type(src_value)})")
+
+                    # ----------------------------------------
+                    # ✅ MANY2ONE SAFE HANDLING
+                    # ----------------------------------------
                     if src_type == 'many2one' and dest_type == 'many2one':
-                        # Many2one value from old ERP is [id, name] or just id
-                        m2o_name = None
-                        if isinstance(src_value, (list, tuple)) and len(src_value) >= 2:
-                            m2o_name = src_value[1]
+
+                        m2o_id = False
+                        m2o_name = False
+
+                        # 🔥 SAFE EXTRACTION
+                        if isinstance(src_value, (list, tuple)):
+                            if len(src_value) >= 1:
+                                m2o_id = src_value[0]
+                            if len(src_value) >= 2:
+                                m2o_name = src_value[1]
+
+                        elif isinstance(src_value, int):
+                            m2o_id = src_value
+
                         elif isinstance(src_value, str):
-                            m2o_name = src_value
-                        else:
-                            print(f"\n  Skipping {src_field}: unexpected value format {type(src_value)}")
+                            m2o_name = src_value.strip()
+
+                        if not m2o_id and not m2o_name:
                             continue
-                        
-                        if not m2o_name:
+
+                        field_obj = DestModel._fields.get(dest_field)
+                        related_model = field_obj.comodel_name if field_obj else None
+
+                        if not related_model:
                             continue
-                        
-                        # Get the related model from destination field definition
-                        if dest_field not in dest_fields_info:
-                            print(f"\n  Skipping {src_field}: dest field '{dest_field}' not found in model")
+
+                        RelatedModel = self.env[related_model].sudo()
+
+                        # 🔥 PARENT FIX
+                        if dest_field == 'parent_id':
+                            if m2o_id in partner_map:
+                                new_vals[dest_field] = partner_map[m2o_id]
+                            else:
+                                print(f"⚠️ Parent not found yet: {m2o_name}")
                             continue
-                        
-                        dest_field_obj = dest_fields_info[dest_field]
-                        related_model = getattr(dest_field_obj, 'comodel_name', None)
-                        
-                        if not related_model or related_model not in self.env:
-                            print(f"\n  Skipping {src_field}: related model '{related_model}' not found")
+
+                        # 🔥 COUNTRY / STATE
+                        if related_model in ['res.country', 'res.country.state']:
+                            if m2o_name:
+                                rec = RelatedModel.search([('name', 'ilike', m2o_name)], limit=1)
+                                if rec:
+                                    new_vals[dest_field] = rec.id
                             continue
-                        
-                        # Use cache to avoid repeated searches
-                        cache_key = (related_model, m2o_name)
-                        if cache_key in m2o_cache:
-                            matched_id = m2o_cache[cache_key]
-                        else:
-                            # Search for matching record by name in related model
-                            RelatedModel = self.env[related_model]
-                            
-                            # Clean up name for better matching
-                            search_name = m2o_name.strip() if isinstance(m2o_name, str) else m2o_name
-                            
-                            # Use sudo to bypass potential access restrictions during migration
-                            # Search in both active and archived records
-                            search_domain = [
-                                '|', ('name', '=', search_name), ('display_name', '=', search_name),
-                                ('active', 'in', [True, False])
-                            ]
-                            
-                            # If the model doesn't have 'active' field, remove that part of domain
-                            if 'active' not in RelatedModel._fields:
-                                search_domain = ['|', ('name', '=', search_name), ('display_name', '=', search_name)]
-                                
-                            matched_record = RelatedModel.sudo().search(search_domain, limit=1)
-                            matched_id = matched_record.id if matched_record else False
-                            
-                            # If no match found, handle based on skip_errors setting
-                            if not matched_id:
-                                error_msg = f"No match found for {src_field}: '{m2o_name}' not found in {related_model}"
-                                if migration.skip_errors:
-                                    migration.notes = (migration.notes or "") + f"\n{error_msg}"
-                                    print(f"\n  {error_msg} - Skipping field")
-                                    matched_id = False
-                                else:
-                                    raise ValidationError(_(f"\nMigration Error: \n  {error_msg}"))
-                            
-                            m2o_cache[cache_key] = matched_id
-                        
-                        if matched_id:
-                            new_vals[dest_field] = matched_id
-                        # If no match, skip this field (don't add to new_vals)
+
+                        # 🔥 GENERIC MATCH
+                        if m2o_name:
+                            rec = RelatedModel.search([('name', '=', m2o_name)], limit=1)
+                            if rec:
+                                new_vals[dest_field] = rec.id
+                            else:
+                                print(f"⚠️ No match for {m2o_name} in {related_model}")
+
+                    # ----------------------------------------
+                    # ✅ NORMAL FIELD SAFE
+                    # ----------------------------------------
                     else:
-                        # Non-relational fields - direct copy
-                        new_vals[dest_field] = src_value
-                
+                        if isinstance(src_value, (list, tuple)):
+                            if len(src_value) >= 2:
+                                new_vals[dest_field] = src_value[1]
+                            elif len(src_value) == 1:
+                                new_vals[dest_field] = src_value[0]
+                        else:
+                            new_vals[dest_field] = src_value
+
+                # ----------------------------------------
+                # ❌ REMOVE BAD FIELDS
+                # ----------------------------------------
+                new_vals.pop('id', None)
+                new_vals.pop('parent_path', None)
+                new_vals.pop('complete_name', None)
+                new_vals.pop('__last_update', None)
+
+                print(f"\n>>> FINAL VALUES: {new_vals}")
+
                 if not new_vals:
-                    print(f"\nSkipping record {vals.get('id')} - no valid field values")
                     migration.skipped_records += 1
                     continue
-                
+
+                # ----------------------------------------
+                # ✅ CREATE RECORD
+                # ----------------------------------------
                 try:
                     with self.env.cr.savepoint():
-                        DestModel.create(new_vals)
+                        rec = DestModel.create(new_vals)
+
+                    partner_map[old_id] = rec.id
+
                     count += 1
                     migration.migrated_records += 1
+
                 except Exception as e:
-                    print(f"\nFailed to create local record for Remote ID {vals.get('id')}: {e}")
-                    
-                    record_name = vals.get('name') or vals.get('display_name') or f"ID: {vals.get('id')}"
-                    error_msg = f"Failed to migrate record: {record_name} (Remote ID: {vals.get('id')}) - Error: {e}"
-                    
-                    if migration.notes:
-                        migration.notes += f"\n{error_msg}"
-                    else:
-                        migration.notes = error_msg
+                    print(f"❌ Failed for ID {old_id}: {e}")
+
                     migration.failed_records += 1
-                        
+                    migration.notes = (migration.notes or "") + f"\nID {old_id}: {e}"
+
                     if not migration.skip_errors:
                         raise
-            
-            print(f"\nBatch {self.batch} completed. Successfully created {count} records.")
+
+            # ----------------------------------------
+            # ✅ FINAL
+            # ----------------------------------------
             self.duration = time.time() - start_time
             self.progress = (count / self.limit) * 100 if self.limit else 0.0
-            print(f"Duration: {self.duration:.2f} seconds.")
             self.is_done = True
-            
+
             return {
                 'type': 'ir.actions.client',
                 'tag': 'display_notification',
                 'params': {
-                    'title': _('Batch Completed'),
-                    'message': _('Successfully migrated %s records.') % count,
+                    'title': 'Batch Completed',
+                    'message': f'Successfully migrated {count} records.',
                     'type': 'success',
-                    'sticky': False,
                 }
             }
-            
+
         except Exception as e:
-            raise UserError(_("Migration Error: %s") % str(e))
+            raise UserError(f"Migration Error: {str(e)}")
 
 
 class DataBridgeFieldMapping(models.Model):
@@ -703,7 +715,10 @@ class DataBridgeFieldMapping(models.Model):
     migration_id = fields.Many2one(
         'data.bridge.api.migration', string='Migration',
         ondelete='cascade', required=True)
-    field_name = fields.Char(string='Field Name', required=True)
+
+    field_label = fields.Char(string='Field Label' )
+    field_name = fields.Char(string='Technical Name', required=True)
+
     field_type = fields.Char(string='Field Type', readonly=True,
         help='Type of the field in the source/old ERP')
     restore_to_id = fields.Many2one(
