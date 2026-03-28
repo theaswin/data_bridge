@@ -70,6 +70,10 @@ class ApiMigration(models.Model):
         string='Skip Errors & Continue', default=False, copy=False,
         help='Continue migration even if some records fail')
     
+    enable_create = fields.Boolean(
+        string='Enable Create', default=False, copy=False,
+        help='Enable create mode for migration')
+    
     # Status
     state = fields.Selection([
         ('draft', 'Draft'),
@@ -473,7 +477,7 @@ class MigratorMigrator(models.Model):
     progress = fields.Float(string='Progress (%)', digits=(16, 2), copy=False)
     is_done = fields.Boolean(string='Done', default=False, copy=False)
 
-    def action_continue(self):
+    def action_update_normal(self):
         """Execute the migration for this specific batch."""
         self.ensure_one()
         migration = self.migration_id
@@ -491,7 +495,9 @@ class MigratorMigrator(models.Model):
             # ----------------------------------------
             # ✅ FIELD MAPPING
             # ----------------------------------------
-            field_mappings = migration.field_mapping_ids.filtered(lambda m: m.restore_to_id)
+            field_mappings = migration.field_mapping_ids.filtered(
+                lambda m: m.restore_to_id and m.field_type not in ['many2one', 'many2many', 'one2many']
+            )
 
             if not field_mappings:
                 raise UserError("No field mappings configured.")
@@ -707,6 +713,407 @@ class MigratorMigrator(models.Model):
         except Exception as e:
             raise UserError(f"Migration Error: {str(e)}")
 
+    def action_update_many2one_fields(self):
+        """Update Many2one fields safely (DO NOT overwrite existing values)"""
+
+        import xmlrpc.client
+
+        migration = self.migration_id
+        if not migration:
+            return
+
+        # ----------------------------------------
+        # ✅ XMLRPC CONNECTION
+        # ----------------------------------------
+        common, models_proxy = migration._get_xmlrpc_connection()
+        uid = migration.erp_uid
+
+        source_model = migration.source_model
+
+        # ----------------------------------------
+        # ✅ MANY2ONE FIELD MAPPING
+        # ----------------------------------------
+        field_mappings = migration.field_mapping_ids.filtered(
+            lambda m: m.restore_to_id and m.field_type == 'many2one'
+        )
+
+        if not field_mappings:
+            raise Exception("No Many2one fields configured")
+
+        field_map = {
+            m.field_name: m.restore_to_id.name
+            for m in field_mappings
+        }
+
+        source_fields = list(field_map.keys())
+
+        # ----------------------------------------
+        # ✅ DEST MODEL
+        # ----------------------------------------
+        dest_model_name = migration.destination_model_id.model or migration.destination_model
+        DestModel = self.env[dest_model_name].sudo()
+
+        # ----------------------------------------
+        # ✅ GET RECORDS (BATCHED)
+        # ----------------------------------------
+        records = DestModel.search([
+            ('name', '!=', False)
+        ], offset=self.offset, limit=self.limit, order='id asc')
+
+        updated = 0
+        skipped_existing = 0
+        skipped_not_found = 0
+
+        # ----------------------------------------
+        # 🔁 LOOP RECORDS
+        # ----------------------------------------
+        for rec in records:
+
+            record_name = rec.name
+            if not record_name:
+                continue
+
+            # ----------------------------------------
+            # 🔍 SEARCH SOURCE RECORD
+            # ----------------------------------------
+            source_ids = models_proxy.execute_kw(
+                migration.erp_db, uid, migration.erp_password,
+                source_model, 'search',
+                [[('name', '=', record_name)]],
+                {'limit': 1}
+            )
+
+            if not source_ids:
+                continue
+
+            source_data = models_proxy.execute_kw(
+                migration.erp_db, uid, migration.erp_password,
+                source_model, 'read',
+                [source_ids],
+                {'fields': source_fields}
+            )
+
+            if not source_data:
+                continue
+
+            source_vals = source_data[0]
+            update_vals = {}
+
+            # ----------------------------------------
+            # 🔁 MANY2ONE FIELD LOOP
+            # ----------------------------------------
+            for src_field, dest_field in field_map.items():
+
+                field_obj = DestModel._fields.get(dest_field)
+
+                # ✅ Ensure it's valid many2one field
+                if not field_obj or field_obj.type != 'many2one':
+                    continue
+
+                # ❌ Skip if already has value
+                if rec[dest_field]:
+                    skipped_existing += 1
+                    continue
+
+                src_value = source_vals.get(src_field)
+                if not src_value:
+                    continue
+
+                # ----------------------------------------
+                # ✅ EXTRACT NAME FROM SOURCE
+                # ----------------------------------------
+                m2o_name = False
+
+                if isinstance(src_value, (list, tuple)) and len(src_value) >= 2:
+                    m2o_name = src_value[1]
+                elif isinstance(src_value, str):
+                    m2o_name = src_value.strip()
+
+                if not m2o_name:
+                    continue
+
+                # ----------------------------------------
+                # 🔍 FIND RELATED MODEL
+                # ----------------------------------------
+                related_model = field_obj.comodel_name
+                if not related_model:
+                    continue
+
+                RelatedModel = self.env[related_model].sudo()
+
+                # ----------------------------------------
+                # 🔎 SEARCH MATCH
+                # ----------------------------------------
+                rel_rec = RelatedModel.search([
+                    '|',
+                    ('name', 'ilike', m2o_name),
+                    ('display_name', 'ilike', m2o_name)
+                ], limit=1)
+
+                # ----------------------------------------
+                # ✅ ASSIGN ONLY IF FOUND
+                # ----------------------------------------
+                if rel_rec:
+                    update_vals[dest_field] = rel_rec.id
+                elif migration.enable_create:
+                    # 🔥 CREATE IF NOT FOUND (ENABLE CREATE MODE)
+                    print(f"DEBUG → Creating missing {related_model}: {m2o_name}")
+                    new_rel_rec = RelatedModel.create({'name': m2o_name})
+                    update_vals[dest_field] = new_rel_rec.id
+                else:
+                    skipped_not_found += 1
+
+            # ----------------------------------------
+            # ✅ SAFE WRITE (NO DATA LOSS)
+            # ----------------------------------------
+            if update_vals:
+                try:
+                    # 🛑 Remove invalid values
+                    clean_vals = {
+                        k: v for k, v in update_vals.items()
+                        if v not in (False, None, '', [])
+                    }
+
+                    if not clean_vals:
+                        continue
+
+                    # 🛡️ Safe write with protected context (PREVENT DATA LOSS)
+                    print(f"DEBUG → Updating {rec.name} with {clean_vals}")
+                    rec.with_context(
+                        tracking_disable=True,
+                        mail_notrack=True,
+                        mail_create_nolog=True,
+                        import_file=True,
+                        no_store_function=True
+                    ).write(clean_vals)
+
+                    updated += 1
+
+                except Exception as e:
+                    print(f"❌ Error updating {rec.name}: {e}")
+
+        # ----------------------------------------
+        # ✅ RESULT NOTIFICATION
+        # ----------------------------------------
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'title': 'Safe Many2one Update ✅',
+                'message': (
+                    f'{updated} updated | '
+                    f'{skipped_existing} skipped (already had values) | '
+                    f'{skipped_not_found} not found'
+                ),
+                'type': 'success',
+            }
+        }
+
+    def action_update_many2many_fields(self):
+        """Update Many2many fields safely (ADD to existing values)"""
+
+        import xmlrpc.client
+
+        migration = self.migration_id
+        if not migration:
+            return
+
+        # ----------------------------------------
+        # ✅ XMLRPC CONNECTION
+        # ----------------------------------------
+        common, models_proxy = migration._get_xmlrpc_connection()
+        uid = migration.erp_uid
+        source_model = migration.source_model
+
+        # ----------------------------------------
+        # ✅ MANY2MANY FIELD MAPPING
+        # ----------------------------------------
+        field_mappings = migration.field_mapping_ids.filtered(
+            lambda m: m.restore_to_id and m.field_type == 'many2many'
+        )
+
+        if not field_mappings:
+            raise Exception("No Many2many fields configured")
+
+        field_map = {
+            m.field_name: m.restore_to_id.name
+            for m in field_mappings
+        }
+        source_fields = list(field_map.keys())
+
+        # ----------------------------------------
+        # ✅ DEST MODEL
+        # ----------------------------------------
+        dest_model_name = migration.destination_model_id.model or migration.destination_model
+        DestModel = self.env[dest_model_name].sudo()
+
+        # ----------------------------------------
+        # ✅ GET RECORDS (BATCHED)
+        # ----------------------------------------
+        records = DestModel.search([
+            ('name', '!=', False)
+        ], offset=self.offset, limit=self.limit, order='id asc')
+
+        updated = 0
+        skipped_not_found = 0
+
+        # ----------------------------------------
+        # 🔁 LOOP RECORDS
+        # ----------------------------------------
+        for rec in records:
+            record_name = rec.name
+            if not record_name:
+                continue
+
+            # ----------------------------------------
+            # 🔍 SEARCH SOURCE RECORD
+            # ----------------------------------------
+            source_ids = models_proxy.execute_kw(
+                migration.erp_db, uid, migration.erp_password,
+                source_model, 'search',
+                [[('name', '=', record_name)]],
+                {'limit': 1}
+            )
+
+            if not source_ids:
+                continue
+
+            source_data = models_proxy.execute_kw(
+                migration.erp_db, uid, migration.erp_password,
+                source_model, 'read',
+                [source_ids],
+                {'fields': source_fields}
+            )
+
+            if not source_data:
+                continue
+
+            source_vals = source_data[0]
+            update_vals = {}
+
+            # ----------------------------------------
+            # 🔁 MANY2MANY FIELD LOOP
+            # ----------------------------------------
+            for src_field, dest_field in field_map.items():
+                field_obj = DestModel._fields.get(dest_field)
+
+                # ✅ Ensure it's valid many2many field
+                if not field_obj or field_obj.type != 'many2many':
+                    continue
+
+                src_value = source_vals.get(src_field)
+                if not src_value or not isinstance(src_value, (list, tuple)):
+                    continue
+
+                # ----------------------------------------
+                # ✅ EXTRACT NAMES FROM SOURCE M2M IDs
+                # ----------------------------------------
+                related_model = field_obj.comodel_name
+                if not related_model:
+                    continue
+
+                m2m_ids = src_value
+                # Fetch names from source
+                try:
+                    m2m_records = models_proxy.execute_kw(
+                        migration.erp_db, uid, migration.erp_password,
+                        related_model, 'read',
+                        [m2m_ids],
+                        {'fields': ['name']}
+                    )
+                except:
+                    continue
+
+                if not m2m_records:
+                    continue
+
+                # ----------------------------------------
+                # 🔎 SEARCH MATCHES LOCALLY
+                # ----------------------------------------
+                RelatedModel = self.env[related_model].sudo()
+                local_ids = []
+
+                for m2m_rec in m2m_records:
+                    m2m_name = m2m_rec.get('name')
+                    if not m2m_name: continue
+
+                    rel_rec = RelatedModel.search([
+                        '|',
+                        ('name', '=', m2m_name),
+                        ('display_name', '=', m2m_name)
+                    ], limit=1)
+
+                    if rel_rec:
+                        local_ids.append(rel_rec.id)
+                    elif migration.enable_create:
+                        print(f"DEBUG → Creating missing {related_model}: {m2m_name}")
+                        new_rel_rec = RelatedModel.create({'name': m2m_name})
+                        local_ids.append(new_rel_rec.id)
+                    else:
+                        skipped_not_found += 1
+
+                # ----------------------------------------
+                # ✅ ASSIGN (LINK)
+                # ----------------------------------------
+                if local_ids:
+                    # Use (4, id) to add to existing
+                    update_vals[dest_field] = [(4, id) for id in local_ids]
+
+            # ----------------------------------------
+            # ✅ SAFE WRITE
+            # ----------------------------------------
+            if update_vals:
+                try:
+                    print(f"DEBUG → Updating M2M {rec.name} with {update_vals}")
+                    rec.with_context(
+                        tracking_disable=True,
+                        mail_notrack=True,
+                        mail_create_nolog=True,
+                        import_file=True,
+                        no_store_function=True
+                    ).write(update_vals)
+                    updated += 1
+                except Exception as e:
+                    print(f"❌ Error updating M2M {rec.name}: {e}")
+
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'title': 'Safe Many2many Update ✅',
+                'message': (
+                    f'{updated} updated | '
+                    f'{skipped_not_found} items not found/skipped'
+                ),
+                'type': 'success',
+            }
+        }
+
+    def action_update_all(self):
+        """Execute normal update, Many2one update, and Many2many update in sequence."""
+        self.ensure_one()
+        
+        # 1. Normal Update (Fields without relations)
+        self.action_update_normal()
+        
+        # 2. Many2one Update
+        self.action_update_many2one_fields()
+        
+        # 3. Many2many Update
+        self.action_update_many2many_fields()
+        
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'title': 'All Updates Completed ✅',
+                'message': 'Successfully processed normal fields, Many2one, and Many2many components.',
+                'type': 'success',
+            }
+        }
+
+    def action_invisible_btn(self):
+        pass
 
 class DataBridgeFieldMapping(models.Model):
     _name = 'data.bridge.field.mapping'

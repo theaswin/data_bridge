@@ -119,6 +119,9 @@
                             <field name="source_model" placeholder="res.partner" readonly="state == 'ready'"    />
                             <field name="destination_model_id" required = "1" readonly="state == 'ready'"/>
                             <field name="domain_filter" placeholder="[('active', '=', True)]" readonly="state == 'ready'"/>
+                            <div colspan="2" class="alert alert-warning mt-2 mb-0" role="alert">
+                                 <i class="fa fa-exclamation-triangle"/> Apply a domain filter to exclude unnecessary records and optimize the migration process.
+                            </div>
                         </group>
                     </group>
                     
@@ -128,6 +131,7 @@
                             <!-- <field name="offset"/> -->
 
                             <field name="skip_errors" readonly="0"/>
+                            <field name="enable_create" readonly="0"/>
                         </group>
                         <group string="Statistics" invisible="not total_source_records">
                             <field name="total_source_records"/>
@@ -163,12 +167,33 @@
                                     <field name="duration" widget="float_time"/>
                                     <field name="progress" widget="progressbar"/>
                                     <field name="is_done" column_invisible="True"/>
-                                    <!-- <button name="action_continue" type="object" 
-                                            string="Continue" class="btn-success"
+                                    <!-- <button name="action_update_normal" type="object" 
+                                            string="Update Normal" class="btn-success"
                                             icon="fa-play" invisible="is_done"/> -->
-                                    <button name="action_continue" type="object" 
-                                            string="Continue" class="btn-success"
-                                            icon="fa-play" />
+                                    <button name="action_update_all" type="object" 
+                                            string="Update All" class="btn-success"
+                                            icon="fa-magic" style="min-width: 130px;"/>
+                                    <button name="action_invisible_btn" type="object" 
+                                            string=" " class="btn-link text-white bg-white"
+                                            style="pointer-events: none; cursor: default; border: none; min-width: 50px;"/>
+                                    <button name="action_invisible_btn" type="object" 
+                                            string=" " class="btn-link text-white bg-white"
+                                            style="pointer-events: none; cursor: default; border: none; min-width: 50px;"/>
+                                    <button name="action_invisible_btn" type="object" 
+                                            string=" " class="btn-link text-white bg-white"
+                                            style="pointer-events: none; cursor: default; border: none; min-width: 50px;"/>
+
+                                    <button name="action_update_normal" type="object" 
+                                            string="Update Normal" class="btn-primary"
+                                            icon="fa-play" style="min-width: 130px;"/>
+                                    <button name="action_update_many2one_fields" type="object" 
+                                            string="Update M2O" class="btn-info"
+                                            icon="fa-link" style="min-width: 130px;"/>
+                                    <button name="action_update_many2many_fields" type="object" 
+                                            string="Update M2M" class="btn-warning"
+                                            icon="fa-link" style="min-width: 130px;"/>
+                                            
+
                                 </list>
                             </field>
                         </page>
