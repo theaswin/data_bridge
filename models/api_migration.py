@@ -290,6 +290,25 @@ class ApiMigration(models.Model):
             _logger.error("Failed to fetch model data: %s", str(e))
             raise UserError(_("Failed to fetch model data: %s") % str(e))
 
+    def action_auto_update_mappings(self):
+        """Automatically map all fields in field_mapping_ids."""
+        self.ensure_one()
+        if not self.destination_model_id:
+            raise UserError(_("Please specify a destination model first."))
+        
+        self.field_mapping_ids.action_auto_update()
+        
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'title': _('Auto Mapping Completed'),
+                'message': _('Field mappings have been automatically updated where matches were found.'),
+                'type': 'success',
+                'sticky': False,
+            }
+        }
+
 
 
     def action_try_map(self):
@@ -476,11 +495,19 @@ class MigratorMigrator(models.Model):
     duration = fields.Float(string='Duration (seconds)', copy=False)
     progress = fields.Float(string='Progress (%)', digits=(16, 2), copy=False)
     is_done = fields.Boolean(string='Done', default=False, copy=False)
+    is_update_all_clicked = fields.Boolean(string='Update All Clicked', default=False, copy=False)
+    is_update_normal_clicked = fields.Boolean(string='Update Normal Clicked', default=False, copy=False)
+    is_update_m2o_clicked = fields.Boolean(string='Update M2O Clicked', default=False, copy=False)
+    is_update_m2m_clicked = fields.Boolean(string='Update M2M Clicked', default=False, copy=False)
 
     def action_update_normal(self):
         """Execute the migration for this specific batch."""
         self.ensure_one()
+        self.is_update_normal_clicked = True
         migration = self.migration_id
+
+        if migration.state != 'running':
+            migration.state = 'running'
 
         if not migration:
             return
@@ -715,6 +742,12 @@ class MigratorMigrator(models.Model):
 
     def action_update_many2one_fields(self):
         """Update Many2one fields safely (DO NOT overwrite existing values)"""
+        self.is_update_m2o_clicked = True
+        if self.migration_id.state != 'running':
+            self.migration_id.state = 'running'
+
+        if not self.is_update_normal_clicked and not self.is_update_all_clicked:
+            raise UserError("You can update Many2one fields only after performing a Normal Update.")
 
         import xmlrpc.client
 
@@ -911,6 +944,12 @@ class MigratorMigrator(models.Model):
 
     def action_update_many2many_fields(self):
         """Update Many2many fields safely (ADD to existing values)"""
+        self.is_update_m2m_clicked = True
+        if self.migration_id.state != 'running':
+            self.migration_id.state = 'running'
+
+        if not self.is_update_normal_clicked and not self.is_update_all_clicked:
+            raise UserError("You can update Many2many fields only after performing a Normal Update.")
 
         import xmlrpc.client
 
@@ -1092,6 +1131,7 @@ class MigratorMigrator(models.Model):
     def action_update_all(self):
         """Execute normal update, Many2one update, and Many2many update in sequence."""
         self.ensure_one()
+        self.is_update_all_clicked = True
         
         # 1. Normal Update (Fields without relations)
         self.action_update_normal()
@@ -1123,13 +1163,13 @@ class DataBridgeFieldMapping(models.Model):
         'data.bridge.api.migration', string='Migration',
         ondelete='cascade', required=True)
 
-    field_label = fields.Char(string='Field Label' )
+    field_label = fields.Char(string='Data From (Old ERP)' )
     field_name = fields.Char(string='Technical Name', required=True)
 
     field_type = fields.Char(string='Field Type', readonly=True,
         help='Type of the field in the source/old ERP')
     restore_to_id = fields.Many2one(
-        'ir.model.fields', string='Restore To',
+        'ir.model.fields', string='Restore To (New ERP)',
         domain="[('model_id', '=', parent.destination_model_id)]",
         help='Field in destination model to map this source field to')
     restore_to_type = fields.Selection(
@@ -1155,3 +1195,24 @@ class DataBridgeFieldMapping(models.Model):
                         ),
                     }
                 }
+
+    def action_auto_update(self):
+        """Automatically find a matching destination field based on name and type."""
+        for rec in self:
+            if not rec.migration_id.destination_model_id:
+                continue
+            
+            # Search for a field in the destination model with the same name and type
+            domain = [
+                ('model_id', '=', rec.migration_id.destination_model_id.id),
+                ('name', '=', rec.field_name),
+                ('ttype', '=', rec.field_type),
+            ]
+            matching_field = self.env['ir.model.fields'].search(domain, limit=1)
+            
+            if matching_field:
+                rec.restore_to_id = matching_field.id
+            else:
+                # Optional: Try matching by label if name doesn't match?
+                # For now, just name and type is safer.
+                pass

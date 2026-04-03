@@ -52,59 +52,6 @@
                         </h1>
                     </div>
                     
-                    <!-- Progress Section (visible during/after migration) -->
-                    <div class="alert alert-info" role="alert"
-                         invisible="state not in ['running', 'done', 'error']">
-                        <div class="row">
-                            <div class="col-12 mb-2">
-                                <strong>Migration Progress</strong>
-                                <field name="progress" widget="progressbar" 
-                                       options="{'editable': false}"/>
-                            </div>
-                        </div>
-                        <div class="row text-center">
-                            <div class="col-md-3">
-                                <div class="border rounded p-2 bg-white">
-                                    <h4 class="text-success mb-0">
-                                        <field name="migrated_records" readonly="1"/>
-                                    </h4>
-                                    <small class="text-muted">Created</small>
-                                </div>
-                            </div>
-                            <div class="col-md-3">
-                                <div class="border rounded p-2 bg-white">
-                                    <h4 class="text-danger mb-0">
-                                        <field name="failed_records" readonly="1"/>
-                                    </h4>
-                                    <small class="text-muted">Failed</small>
-                                </div>
-                            </div>
-                            <div class="col-md-3">
-                                <div class="border rounded p-2 bg-white">
-                                    <h4 class="text-warning mb-0">
-                                        <field name="skipped_records" readonly="1"/>
-                                    </h4>
-                                    <small class="text-muted">Skipped</small>
-                                </div>
-                            </div>
-                            <div class="col-md-3">
-                                <div class="border rounded p-2 bg-white">
-                                    <h4 class="text-info mb-0">
-                                        <field name="records_per_second" readonly="1"/> /s
-                                    </h4>
-                                    <small class="text-muted">Speed</small>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="row mt-2" invisible="state != 'running'">
-                            <div class="col-12 text-center">
-                                <span class="text-muted">
-                                    Batch <field name="current_batch" readonly="1"/> of 
-                                    <field name="total_batches" readonly="1"/>
-                                </span>
-                            </div>
-                        </div>
-                    </div>
                     
                     <group>
                         <group string="Old ERP Connection">
@@ -141,9 +88,69 @@
                     </group>
                     
                     <notebook>
-                    <page string="Field Mapping" name="field_mapping" invisible="state == 'draft'">
-                            <div class="alert alert-info mb-3">
-                                <i class="fa fa-info-circle"/> All fields available in the source ERP model. Map them to destination fields:
+                        <page string="Status" name="status" invisible="state not in ['running', 'done', 'error']">
+                            <div class="alert alert-info" role="alert">
+                                <div class="row">
+                                    <div class="col-12 mb-2">
+                                        <strong>Migration Progress</strong>
+                                        <field name="progress" widget="progressbar" 
+                                               options="{'editable': false}"/>
+                                    </div>
+                                </div>
+                                <div class="row text-center">
+                                    <div class="col-md-3">
+                                        <div class="border rounded p-2 bg-white">
+                                            <h4 class="text-success mb-0">
+                                                <field name="migrated_records" readonly="1"/>
+                                            </h4>
+                                            <small class="text-muted">Created</small>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-3">
+                                        <div class="border rounded p-2 bg-white">
+                                            <h4 class="text-danger mb-0">
+                                                <field name="failed_records" readonly="1"/>
+                                            </h4>
+                                            <small class="text-muted">Failed</small>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-3">
+                                        <div class="border rounded p-2 bg-white">
+                                            <h4 class="text-warning mb-0">
+                                                <field name="skipped_records" readonly="1"/>
+                                            </h4>
+                                            <small class="text-muted">Skipped</small>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-3">
+                                        <div class="border rounded p-2 bg-white">
+                                            <h4 class="text-info mb-0">
+                                                <field name="records_per_second" readonly="1"/> /s
+                                            </h4>
+                                            <small class="text-muted">Speed</small>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="row mt-2" invisible="state != 'running'">
+                                    <div class="col-12 text-center">
+                                        <span class="text-muted">
+                                            Batch <field name="current_batch" readonly="1"/> of 
+                                            <field name="total_batches" readonly="1"/>
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+                        </page>
+
+                        <page string="Field Mapping" name="field_mapping" invisible="state == 'draft'">
+                            <div class="alert alert-info d-flex align-items-center justify-content-between mb-3" role="alert">
+                                <div>
+                                    <i class="fa fa-info-circle me-2"/> 
+                                    All fields available in the source ERP model. Map them to destination fields:
+                                </div>
+                                <button name="action_auto_update_mappings" type="object"
+                                        string="Auto Update Mappings" class="btn btn-primary btn-sm"
+                                        icon="fa-magic" help="Automatically map all fields by name and type"/>
                             </div>
                             <field name="field_mapping_ids" nolabel="1">
                                 <list editable="bottom">
@@ -154,6 +161,9 @@
                                            domain="[('model_id', '=', parent.destination_model_id)]"
                                            options="{'no_create': True}"/>
                                     <field name="restore_to_type" readonly="1" string="Type"/>
+                                    <!-- <button name="action_auto_update" type="object" 
+                                            string="Auto Update" icon="fa-refresh" 
+                                            class="btn-link" title="Auto Map Field"/> -->
                                 </list>
                             </field>
                         </page>
@@ -167,12 +177,15 @@
                                     <field name="duration" widget="float_time"/>
                                     <field name="progress" widget="progressbar"/>
                                     <field name="is_done" column_invisible="True"/>
-                                    <!-- <button name="action_update_normal" type="object" 
-                                            string="Update Normal" class="btn-success"
-                                            icon="fa-play" invisible="is_done"/> -->
+                                    <field name="is_update_all_clicked" column_invisible="True"/>
+                                    <field name="is_update_normal_clicked" column_invisible="True"/>
+                                    <field name="is_update_m2o_clicked" column_invisible="True"/>
+                                    <field name="is_update_m2m_clicked" column_invisible="True"/>
+
                                     <button name="action_update_all" type="object" 
                                             string="Update All" class="btn-success"
-                                            icon="fa-magic" style="min-width: 130px;"/>
+                                            icon="fa-magic" style="min-width: 130px;"
+                                            invisible="is_update_all_clicked or is_update_normal_clicked"/>
                                     <button name="action_invisible_btn" type="object" 
                                             string=" " class="btn-link text-white bg-white"
                                             style="pointer-events: none; cursor: default; border: none; min-width: 50px;"/>
@@ -185,13 +198,16 @@
 
                                     <button name="action_update_normal" type="object" 
                                             string="Update Normal" class="btn-primary"
-                                            icon="fa-play" style="min-width: 130px;"/>
+                                            icon="fa-play" style="min-width: 130px;"
+                                            invisible="is_update_all_clicked or is_update_normal_clicked"/>
                                     <button name="action_update_many2one_fields" type="object" 
                                             string="Update M2O" class="btn-info"
-                                            icon="fa-link" style="min-width: 130px;"/>
+                                            icon="fa-link" style="min-width: 130px;"
+                                            invisible="is_update_all_clicked or is_update_m2o_clicked"/>
                                     <button name="action_update_many2many_fields" type="object" 
                                             string="Update M2M" class="btn-warning"
-                                            icon="fa-link" style="min-width: 130px;"/>
+                                            icon="fa-link" style="min-width: 130px;"
+                                            invisible="is_update_all_clicked or is_update_m2m_clicked"/>
                                             
 
                                 </list>
