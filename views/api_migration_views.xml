@@ -181,6 +181,7 @@
                                     <field name="is_update_normal_clicked" column_invisible="True"/>
                                     <field name="is_update_m2o_clicked" column_invisible="True"/>
                                     <field name="is_update_m2m_clicked" column_invisible="True"/>
+                                    <field name="is_update_o2m_clicked" column_invisible="True"/>
 
                                     <button name="action_update_all" type="object" 
                                             string="Update All" class="btn-success"
@@ -214,9 +215,9 @@
                                             icon="fa-link" style="min-width: 130px;"
                                             invisible="is_update_all_clicked or is_update_m2m_clicked"/>
                                     <button name="action_update_one2many_fields" type="object" 
-                                            string="Update O2M" class="btn-warning"
-                                            icon="fa-link" style="min-width: 130px;"
-                                            />       
+                                            string="Update O2M" class="btn-secondary"
+                                            icon="fa-list" style="min-width: 130px;"
+                                            invisible="is_update_all_clicked or is_update_o2m_clicked"/>
 
                                 </list>
                             </field>

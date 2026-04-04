@@ -491,6 +491,7 @@ class MigratorMigrator(models.Model):
     is_update_normal_clicked = fields.Boolean(string='Update Normal Clicked', default=False, copy=False)
     is_update_m2o_clicked = fields.Boolean(string='Update M2O Clicked', default=False, copy=False)
     is_update_m2m_clicked = fields.Boolean(string='Update M2M Clicked', default=False, copy=False)
+    is_update_o2m_clicked = fields.Boolean(string='Update O2M Clicked', default=False, copy=False)
 
     def action_update_normal(self):
         """Execute the migration for this specific batch."""
@@ -1155,7 +1156,149 @@ class MigratorMigrator(models.Model):
         }
     
     def action_update_one2many_fields(self):
-        pass
+        """Update One2many fields in batch (Better and Faster method)"""
+        self.is_update_o2m_clicked = True
+        if self.migration_id.state != 'running':
+            self.migration_id.state = 'running'
+
+        if not self.is_update_normal_clicked and not self.is_update_all_clicked:
+            raise UserError("You can update One2many fields only after performing a Normal Update.")
+
+        migration = self.migration_id
+        if not migration:
+            return
+
+        # 1. XMLRPC Connection
+        common, models_proxy = migration._get_xmlrpc_connection()
+        uid = migration.erp_uid
+        source_model = migration.source_model
+        erp_db = migration.erp_db
+        erp_password = migration.erp_password
+
+        # 2. Identify O2M Mappings
+        o2m_mappings = migration.field_mapping_ids.filtered(
+            lambda m: m.restore_to_id and m.field_type == 'one2many'
+        )
+        if not o2m_mappings:
+            return self._notify_reload("No One2many fields configured")
+
+        o2m_field_map = {m.field_name: m.restore_to_id.name for m in o2m_mappings}
+        source_o2m_fields = list(o2m_field_map.keys())
+
+        # 3. Get Local Parents in this Batch
+        dest_model_name = migration.destination_model_id.model
+        DestModel = self.env[dest_model_name].sudo()
+        local_parents = DestModel.search([
+            ('name', '!=', False)
+        ], offset=self.offset, limit=self.limit, order='id asc')
+
+        if not local_parents:
+            return self._notify_reload("No local records found in this batch range.")
+
+        # 4. Batch Search/Read Source Parents
+        parent_names = local_parents.mapped('name')
+        source_parent_ids = models_proxy.execute_kw(
+            erp_db, uid, erp_password,
+            source_model, 'search',
+            [[('name', 'in', parent_names)]]
+        )
+
+        if not source_parent_ids:
+            return self._notify_reload("No matching records found in source ERP.")
+
+        source_parents_data = models_proxy.execute_kw(
+            erp_db, uid, erp_password,
+            source_model, 'read',
+            [source_parent_ids],
+            {'fields': ['name'] + source_o2m_fields}
+        )
+
+        # 5. Build Map: Source ID -> Local Record
+        name_to_local = {p.name: p for p in local_parents}
+        source_id_to_local_id = {}
+        for s_parent in source_parents_data:
+            l_parent = name_to_local.get(s_parent['name'])
+            if l_parent:
+                source_id_to_local_id[s_parent['id']] = l_parent.id
+
+        total_children_created = 0
+
+        # 6. Process each O2M Field
+        for src_o2m, dest_o2m in o2m_field_map.items():
+            ChildModel = DestModel._fields[dest_o2m].comodel_name
+            LocalChildModel = self.env[ChildModel].sudo()
+            
+            # Find the inverse Many2one field
+            inverse_field = DestModel._fields[dest_o2m].inverse_name
+            if not inverse_field:
+                continue
+
+            # Collect all child IDs for this O2M field across all parents
+            all_source_child_ids = []
+            child_to_parent_map = {} # source_child_id -> local_parent_id
+            
+            for s_parent in source_parents_data:
+                s_child_ids = s_parent.get(src_o2m)
+                if s_child_ids:
+                    all_source_child_ids.extend(s_child_ids)
+                    l_parent_id = source_id_to_local_id.get(s_parent['id'])
+                    for sc_id in s_child_ids:
+                        child_to_parent_map[sc_id] = l_parent_id
+
+            if not all_source_child_ids:
+                continue
+
+            # Bulk Read Source Children
+            source_children_data = models_proxy.execute_kw(
+                erp_db, uid, erp_password,
+                ChildModel, 'read',
+                [all_source_child_ids],
+                {'fields': []} # Fetch all
+            )
+
+            # 7. Prepare Bulk Creation
+            child_vals_list = []
+            child_field_names = LocalChildModel._fields.keys()
+
+            for s_child in source_children_data:
+                child_vals = {}
+                # Auto-match fields by name
+                for field_name, value in s_child.items():
+                    if field_name == 'id' or field_name == inverse_field:
+                        continue
+                    if field_name in child_field_names:
+                        # Basic type handling: Odoo XMLRPC returns [id, name] for M2O
+                        if isinstance(value, (list, tuple)) and len(value) == 2:
+                            # It's a Many2one, we need to handle it or skip for now
+                            # For simplicity in this "Better/Faster" method, we skip relations in children
+                            # unless they are basic types. But we MUST set the parent relation.
+                            continue
+                        child_vals[field_name] = value
+                
+                # Set the Parent Relation
+                local_p_id = child_to_parent_map.get(s_child['id'])
+                if local_p_id:
+                    child_vals[inverse_field] = local_p_id
+                    child_vals_list.append(child_vals)
+
+            # 8. ORM Bulk Create
+            if child_vals_list:
+                LocalChildModel.with_context(tracking_disable=True).create(child_vals_list)
+                total_children_created += len(child_vals_list)
+
+        return self._notify_reload(f"Batch O2M completed. Created {total_children_created} child records.")
+
+    def _notify_reload(self, message):
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'title': 'Migration Update ✅',
+                'message': message,
+                'type': 'success',
+                'next': {'type': 'ir.actions.client', 'tag': 'full_browser_reload'},
+            }
+        }
 
 class DataBridgeFieldMapping(models.Model):
     _name = 'data.bridge.field.mapping'
