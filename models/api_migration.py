@@ -606,112 +606,83 @@ class MigratorMigrator(models.Model):
                     src_value = vals[src_field]
                     dest_field = info['dest_field']
                     src_type = info['src_type']
-                    dest_type = info['dest_type']
+                    src_value = source_vals.get(src_field)
+                    if src_value is False or src_value is None:
+                        continue
 
-                    print(f"DEBUG → {src_field}: {src_value} ({type(src_value)})")
+                    field_obj = DestModel._fields.get(dest_field)
+                    if not field_obj:
+                        continue
 
-                    # ----------------------------------------
-                    # ✅ MANY2ONE SAFE HANDLING
-                    # ----------------------------------------
-                    if src_type == 'many2one' and dest_type == 'many2one':
-
-                        m2o_id = False
+                    # 🔥 RELATION HANDLING (Many2one)
+                    if field_obj.type == 'many2one':
+                        related_model = field_obj.comodel_name
                         m2o_name = False
-
-                        # 🔥 SAFE EXTRACTION
-                        if isinstance(src_value, (list, tuple)):
-                            if len(src_value) >= 1:
-                                m2o_id = src_value[0]
-                            if len(src_value) >= 2:
-                                m2o_name = src_value[1]
-
-                        elif isinstance(src_value, int):
-                            m2o_id = src_value
-
+                        if isinstance(src_value, (list, tuple)) and len(src_value) >= 2:
+                            m2o_name = src_value[1]
                         elif isinstance(src_value, str):
                             m2o_name = src_value.strip()
 
-                        if not m2o_id and not m2o_name:
+                        if not m2o_name:
                             continue
 
-                        field_obj = DestModel._fields.get(dest_field)
-                        related_model = field_obj.comodel_name if field_obj else None
-
-                        if not related_model:
-                            continue
-
-                        RelatedModel = self.env[related_model].sudo()
-
-                        # 🔥 PARENT FIX
-                        if dest_field == 'parent_id':
-                            if m2o_id in partner_map:
-                                new_vals[dest_field] = partner_map[m2o_id]
-                            else:
-                                print(f"⚠️ Parent not found yet: {m2o_name}")
-                            continue
-
-                        # 🔥 COUNTRY / STATE
+                        # 🔥 COUNTRY / STATE CACHING
                         if related_model in ['res.country', 'res.country.state']:
-                            if m2o_name:
-                                rec = RelatedModel.search([('name', 'ilike', m2o_name)], limit=1)
-                                if rec:
-                                    new_vals[dest_field] = rec.id
+                            rel_rec = self.env[related_model].sudo().search([('name', 'ilike', m2o_name)], limit=1)
+                            if rel_rec:
+                                new_vals[dest_field] = rel_rec.id
                             continue
 
                         # 🔥 GENERIC MATCH
-                        if m2o_name:
-                            rec = RelatedModel.search([('name', '=', m2o_name)], limit=1)
-                            if rec:
-                                new_vals[dest_field] = rec.id
-                            else:
-                                print(f"⚠️ No match for {m2o_name} in {related_model}")
+                        rel_rec = self.env[related_model].sudo().search([('name', '=', m2o_name)], limit=1)
+                        if rel_rec:
+                            new_vals[dest_field] = rel_rec.id
+                        continue
 
-                    # ----------------------------------------
-                    # ✅ NORMAL FIELD SAFE
-                    # ----------------------------------------
+                    # ✅ NORMAL FIELD
                     else:
                         if isinstance(src_value, (list, tuple)):
-                            if len(src_value) >= 2:
-                                new_vals[dest_field] = src_value[1]
-                            elif len(src_value) == 1:
-                                new_vals[dest_field] = src_value[0]
+                            new_vals[dest_field] = src_value[1] if len(src_value) >= 2 else (src_value[0] if src_value else False)
                         else:
                             new_vals[dest_field] = src_value
 
-                # ----------------------------------------
-                # ❌ REMOVE BAD FIELDS
-                # ----------------------------------------
-                new_vals.pop('id', None)
-                new_vals.pop('parent_path', None)
-                new_vals.pop('complete_name', None)
-                new_vals.pop('__last_update', None)
+                # Cleanup metadata fields
+                for f in ['id', 'parent_path', 'complete_name', '__last_update']:
+                    new_vals.pop(f, None)
 
-                print(f"\n>>> FINAL VALUES: {new_vals}")
-
-                if not new_vals:
+                if new_vals:
+                    vals_list.append(new_vals)
+                    old_ids_in_batch.append(old_id)
+                else:
                     migration.skipped_records += 1
-                    continue
 
-                # ----------------------------------------
-                # ✅ CREATE RECORD
-                # ----------------------------------------
+            # ----------------------------------------
+            # ✅ BULK CREATE
+            # ----------------------------------------
+            if vals_list:
                 try:
-                    with self.env.cr.savepoint():
-                        rec = DestModel.create(new_vals)
-
-                    partner_map[old_id] = rec.id
-
-                    count += 1
-                    migration.migrated_records += 1
+                    # Use context to disable heavy triggers
+                    new_records = DestModel.with_context(
+                        tracking_disable=True,
+                        mail_notrack=True,
+                        mail_create_nolog=True,
+                        import_file=True
+                    ).create(vals_list)
+                    
+                    # Update Map & Stats
+                    for i, new_rec in enumerate(new_records):
+                        old_id = old_ids_in_batch[i]
+                        partner_map[old_id] = new_rec.id
+                    
+                    count = len(new_records)
+                    migration.migrated_records += count
 
                 except Exception as e:
-                    print(f"❌ Failed for ID {old_id}: {e}")
-
-                    migration.failed_records += 1
-                    migration.notes = (migration.notes or "") + f"\nID {old_id}: {e}"
-
+                    print(f"❌ Bulk creation failed: {e}")
+                    # Fallback to individual create if bulk fails (optional, but safer for now)
                     if not migration.skip_errors:
-                        raise
+                        raise UserError(f"Bulk Migration Error: {str(e)}")
+                    migration.failed_records += len(vals_list)
 
             # ----------------------------------------
             # ✅ FINAL
@@ -775,69 +746,60 @@ class MigratorMigrator(models.Model):
         source_fields = list(field_map.keys())
 
         # ----------------------------------------
-        # ✅ DEST MODEL
+        # ✅ DEST MODEL & BATCH RECORDS
         # ----------------------------------------
         dest_model_name = migration.destination_model_id.model or migration.destination_model
         DestModel = self.env[dest_model_name].sudo()
-
-        # ----------------------------------------
-        # ✅ GET RECORDS (BATCHED)
-        # ----------------------------------------
-        records = DestModel.search([
+        local_parents = DestModel.search([
             ('name', '!=', False)
         ], offset=self.offset, limit=self.limit, order='id asc')
+
+        if not local_parents:
+            return self._notify_reload("No local records found in this batch range.")
+
+        # ----------------------------------------
+        # 🔍 BATCH SEARCH/READ SOURCE PARENTS
+        # ----------------------------------------
+        parent_names = local_parents.mapped('name')
+        source_parent_ids = models_proxy.execute_kw(
+            migration.erp_db, uid, migration.erp_password,
+            source_model, 'search',
+            [[('name', 'in', parent_names)]]
+        )
+
+        if not source_parent_ids:
+            return self._notify_reload("No matching records found in source ERP.")
+
+        # Bulk read source data
+        source_parents_data = models_proxy.execute_kw(
+            migration.erp_db, uid, migration.erp_password,
+            source_model, 'read',
+            [source_parent_ids],
+            {'fields': ['name'] + source_fields}
+        )
+
+        # Build Map: name -> source_vals
+        source_data_map = {p['name']: p for p in source_parents_data}
 
         updated = 0
         skipped_existing = 0
         skipped_not_found = 0
+        relation_cache = {} # (model, name) -> id
 
         # ----------------------------------------
-        # 🔁 LOOP RECORDS
+        # 🔁 LOOP LOCAL RECORDS & APPLY UPDATES
         # ----------------------------------------
-        for rec in records:
-
-            record_name = rec.name
-            if not record_name:
+        for rec in local_parents:
+            source_vals = source_data_map.get(rec.name)
+            if not source_vals:
                 continue
 
-            # ----------------------------------------
-            # 🔍 SEARCH SOURCE RECORD
-            # ----------------------------------------
-            source_ids = models_proxy.execute_kw(
-                migration.erp_db, uid, migration.erp_password,
-                source_model, 'search',
-                [[('name', '=', record_name)]],
-                {'limit': 1}
-            )
-
-            if not source_ids:
-                continue
-
-            source_data = models_proxy.execute_kw(
-                migration.erp_db, uid, migration.erp_password,
-                source_model, 'read',
-                [source_ids],
-                {'fields': source_fields}
-            )
-
-            if not source_data:
-                continue
-
-            source_vals = source_data[0]
             update_vals = {}
-
-            # ----------------------------------------
-            # 🔁 MANY2ONE FIELD LOOP
-            # ----------------------------------------
             for src_field, dest_field in field_map.items():
-
                 field_obj = DestModel._fields.get(dest_field)
-
-                # ✅ Ensure it's valid many2one field
                 if not field_obj or field_obj.type != 'many2one':
                     continue
 
-                # ❌ Skip if already has value
                 if rec[dest_field]:
                     skipped_existing += 1
                     continue
@@ -846,78 +808,45 @@ class MigratorMigrator(models.Model):
                 if not src_value:
                     continue
 
-                # ----------------------------------------
-                # ✅ EXTRACT NAME FROM SOURCE
-                # ----------------------------------------
-                m2o_name = False
-
-                if isinstance(src_value, (list, tuple)) and len(src_value) >= 2:
-                    m2o_name = src_value[1]
-                elif isinstance(src_value, str):
-                    m2o_name = src_value.strip()
-
+                m2o_name = src_value[1] if isinstance(src_value, (list, tuple)) and len(src_value) >= 2 else (src_value.strip() if isinstance(src_value, str) else False)
                 if not m2o_name:
                     continue
 
-                # ----------------------------------------
-                # 🔍 FIND RELATED MODEL
-                # ----------------------------------------
                 related_model = field_obj.comodel_name
-                if not related_model:
-                    continue
+                cache_key = (related_model, m2o_name)
+                
+                if cache_key in relation_cache:
+                    rel_id = relation_cache[cache_key]
+                else:
+                    RelatedModel = self.env[related_model].sudo()
+                    rel_rec = RelatedModel.search([
+                        '|', ('name', '=', m2o_name), ('display_name', '=', m2o_name)
+                    ], limit=1)
+                    rel_id = rel_rec.id if rel_rec else False
+                    
+                    if not rel_id and migration.enable_create:
+                        rel_rec = RelatedModel.create({'name': m2o_name})
+                        rel_id = rel_rec.id
+                    
+                    relation_cache[cache_key] = rel_id
 
-                RelatedModel = self.env[related_model].sudo()
-
-                # ----------------------------------------
-                # 🔎 SEARCH MATCH
-                # ----------------------------------------
-                rel_rec = RelatedModel.search([
-                    '|',
-                    ('name', 'ilike', m2o_name),
-                    ('display_name', 'ilike', m2o_name)
-                ], limit=1)
-
-                # ----------------------------------------
-                # ✅ ASSIGN ONLY IF FOUND
-                # ----------------------------------------
-                if rel_rec:
-                    update_vals[dest_field] = rel_rec.id
-                elif migration.enable_create:
-                    # 🔥 CREATE IF NOT FOUND (ENABLE CREATE MODE)
-                    print(f"DEBUG → Creating missing {related_model}: {m2o_name}")
-                    new_rel_rec = RelatedModel.create({'name': m2o_name})
-                    update_vals[dest_field] = new_rel_rec.id
+                if rel_id:
+                    update_vals[dest_field] = rel_id
                 else:
                     skipped_not_found += 1
 
-            # ----------------------------------------
-            # ✅ SAFE WRITE (NO DATA LOSS)
-            # ----------------------------------------
             if update_vals:
                 try:
-                    # 🛑 Remove invalid values
-                    clean_vals = {
-                        k: v for k, v in update_vals.items()
-                        if v not in (False, None, '', [])
-                    }
-
-                    if not clean_vals:
-                        continue
-
-                    # 🛡️ Safe write with protected context (PREVENT DATA LOSS)
-                    print(f"DEBUG → Updating {rec.name} with {clean_vals}")
                     rec.with_context(
                         tracking_disable=True,
                         mail_notrack=True,
                         mail_create_nolog=True,
                         import_file=True,
                         no_store_function=True
-                    ).write(clean_vals)
-
+                    ).write(update_vals)
                     updated += 1
-
                 except Exception as e:
-                    print(f"❌ Error updating {rec.name}: {e}")
+                    print(f"❌ Error updating M2O for {rec.name}: {e}")
 
         # ----------------------------------------
         # ✅ RESULT NOTIFICATION
@@ -976,129 +905,101 @@ class MigratorMigrator(models.Model):
         source_fields = list(field_map.keys())
 
         # ----------------------------------------
-        # ✅ DEST MODEL
+        # ✅ DEST MODEL & BATCH RECORDS
         # ----------------------------------------
         dest_model_name = migration.destination_model_id.model or migration.destination_model
         DestModel = self.env[dest_model_name].sudo()
-
-        # ----------------------------------------
-        # ✅ GET RECORDS (BATCHED)
-        # ----------------------------------------
-        records = DestModel.search([
+        local_parents = DestModel.search([
             ('name', '!=', False)
         ], offset=self.offset, limit=self.limit, order='id asc')
 
+        if not local_parents:
+            return self._notify_reload("No local records found in this batch range.")
+
+        # ----------------------------------------
+        # 🔍 BATCH SEARCH/READ SOURCE PARENTS
+        # ----------------------------------------
+        parent_names = local_parents.mapped('name')
+        source_parent_ids = models_proxy.execute_kw(
+            migration.erp_db, uid, migration.erp_password,
+            source_model, 'search',
+            [[('name', 'in', parent_names)]]
+        )
+
+        if not source_parent_ids:
+            return self._notify_reload("No matching records found in source ERP.")
+
+        # Bulk read source data (M2M fields)
+        source_parents_data = models_proxy.execute_kw(
+            migration.erp_db, uid, migration.erp_password,
+            source_model, 'read',
+            [source_parent_ids],
+            {'fields': ['name'] + source_fields}
+        )
+
+        # Build Map: name -> source_vals
+        source_data_map = {p['name']: p for p in source_parents_data}
+
         updated = 0
         skipped_not_found = 0
+        relation_cache = {} # (model, name) -> id
 
         # ----------------------------------------
-        # 🔁 LOOP RECORDS
+        # 🔁 LOOP LOCAL RECORDS & APPLY UPDATES
         # ----------------------------------------
-        for rec in records:
-            record_name = rec.name
-            if not record_name:
+        for rec in local_parents:
+            source_vals = source_data_map.get(rec.name)
+            if not source_vals:
                 continue
 
-            # ----------------------------------------
-            # 🔍 SEARCH SOURCE RECORD
-            # ----------------------------------------
-            source_ids = models_proxy.execute_kw(
-                migration.erp_db, uid, migration.erp_password,
-                source_model, 'search',
-                [[('name', '=', record_name)]],
-                {'limit': 1}
-            )
-
-            if not source_ids:
-                continue
-
-            source_data = models_proxy.execute_kw(
-                migration.erp_db, uid, migration.erp_password,
-                source_model, 'read',
-                [source_ids],
-                {'fields': source_fields}
-            )
-
-            if not source_data:
-                continue
-
-            source_vals = source_data[0]
             update_vals = {}
-
-            # ----------------------------------------
-            # 🔁 MANY2MANY FIELD LOOP
-            # ----------------------------------------
             for src_field, dest_field in field_map.items():
                 field_obj = DestModel._fields.get(dest_field)
-
-                # ✅ Ensure it's valid many2many field
                 if not field_obj or field_obj.type != 'many2many':
                     continue
 
-                src_value = source_vals.get(src_field)
-                if not src_value or not isinstance(src_value, (list, tuple)):
+                src_m2m_data = source_vals.get(src_field)
+                if not src_m2m_data or not isinstance(src_m2m_data, list):
                     continue
 
-                # ----------------------------------------
-                # ✅ EXTRACT NAMES FROM SOURCE M2M IDs
-                # ----------------------------------------
                 related_model = field_obj.comodel_name
-                if not related_model:
-                    continue
-
-                m2m_ids = src_value
-                # Fetch names from source
-                try:
-                    m2m_records = models_proxy.execute_kw(
-                        migration.erp_db, uid, migration.erp_password,
-                        related_model, 'read',
-                        [m2m_ids],
-                        {'fields': ['name']}
-                    )
-                except:
-                    continue
-
-                if not m2m_records:
-                    continue
-
-                # ----------------------------------------
-                # 🔎 SEARCH MATCHES LOCALLY
-                # ----------------------------------------
                 RelatedModel = self.env[related_model].sudo()
-                local_ids = []
+                
+                # Fetch target record names if we only have IDs
+                target_ids = src_m2m_data
+                target_records_data = models_proxy.execute_kw(
+                    migration.erp_db, uid, migration.erp_password,
+                    related_model, 'read',
+                    [target_ids],
+                    {'fields': ['display_name', 'name']}
+                )
 
-                for m2m_rec in m2m_records:
-                    m2m_name = m2m_rec.get('name')
-                    if not m2m_name: continue
-
-                    rel_rec = RelatedModel.search([
-                        '|',
-                        ('name', '=', m2m_name),
-                        ('display_name', '=', m2m_name)
-                    ], limit=1)
-
-                    if rel_rec:
-                        local_ids.append(rel_rec.id)
-                    elif migration.enable_create:
-                        print(f"DEBUG → Creating missing {related_model}: {m2m_name}")
-                        new_rel_rec = RelatedModel.create({'name': m2m_name})
-                        local_ids.append(new_rel_rec.id)
+                local_target_ids = []
+                for t_data in target_records_data:
+                    t_name = t_data.get('display_name') or t_data.get('name')
+                    if not t_name: continue
+                    
+                    cache_key = (related_model, t_name)
+                    if cache_key in relation_cache:
+                        l_id = relation_cache[cache_key]
+                    else:
+                        rel_rec = RelatedModel.search([
+                            '|', ('name', '=', t_name), ('display_name', '=', t_name)
+                        ], limit=1)
+                        l_id = rel_rec.id if rel_rec else False
+                        relation_cache[cache_key] = l_id
+                    
+                    if l_id:
+                        local_target_ids.append(l_id)
                     else:
                         skipped_not_found += 1
 
-                # ----------------------------------------
-                # ✅ ASSIGN (LINK)
-                # ----------------------------------------
-                if local_ids:
-                    # Use (4, id) to add to existing
-                    update_vals[dest_field] = [(4, id) for id in local_ids]
+                if local_target_ids:
+                    # Odoo M2M update: (4, id) to add links
+                    update_vals[dest_field] = [(4, tid) for tid in local_target_ids if tid not in rec[dest_field].ids]
 
-            # ----------------------------------------
-            # ✅ SAFE WRITE
-            # ----------------------------------------
             if update_vals:
                 try:
-                    print(f"DEBUG → Updating M2M {rec.name} with {update_vals}")
                     rec.with_context(
                         tracking_disable=True,
                         mail_notrack=True,
@@ -1108,17 +1009,17 @@ class MigratorMigrator(models.Model):
                     ).write(update_vals)
                     updated += 1
                 except Exception as e:
-                    print(f"❌ Error updating M2M {rec.name}: {e}")
+                    print(f"❌ Error updating M2M for {rec.name}: {e}")
 
+        # ----------------------------------------
+        # ✅ RESULT NOTIFICATION
+        # ----------------------------------------
         return {
             'type': 'ir.actions.client',
             'tag': 'display_notification',
             'params': {
                 'title': 'Safe Many2many Update ✅',
-                'message': (
-                    f'{updated} updated | '
-                    f'{skipped_not_found} items not found/skipped'
-                ),
+                'message': f'{updated} updated | {skipped_not_found} not found',
                 'type': 'success',
                 'next': {'type': 'ir.actions.client', 'tag': 'full_browser_reload'},
             },
