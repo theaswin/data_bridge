@@ -208,12 +208,15 @@
                                     <button name="action_update_many2one_fields" type="object" 
                                             string="Update M2O" class="btn-info"
                                             icon="fa-link" style="min-width: 130px;"
-                                            />
+                                            invisible="is_update_all_clicked or is_update_m2o_clicked"/>
                                     <button name="action_update_many2many_fields" type="object" 
                                             string="Update M2M" class="btn-warning"
                                             icon="fa-link" style="min-width: 130px;"
-                                            />
-                                            
+                                            invisible="is_update_all_clicked or is_update_m2m_clicked"/>
+                                    <button name="action_update_one2many_fields" type="object" 
+                                            string="Update O2M" class="btn-warning"
+                                            icon="fa-link" style="min-width: 130px;"
+                                            />       
 
                                 </list>
                             </field>

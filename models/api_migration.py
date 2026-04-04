@@ -313,10 +313,6 @@ class ApiMigration(models.Model):
     def action_try_map(self):
         pass
         
-        
-
-
-
     def action_analyze_fields(self):
         """Analyze fields in source and destination models to identify what can be migrated."""
         self.ensure_one()
@@ -451,8 +447,6 @@ class ApiMigration(models.Model):
             })
             print("Batch generation completed.")
 
-
-
     def action_ready(self):
         for rec in self:
             self.state = 'ready'
@@ -480,7 +474,6 @@ class ApiMigration(models.Model):
                     'data_range': f'{start} - {end}',
             })
             print("Batch generation completed.")
-
 
 class MigratorMigrator(models.Model):
     _name = 'migrator.migrator'
@@ -1160,6 +1153,9 @@ class MigratorMigrator(models.Model):
             'type': 'ir.actions.client',
             'tag': 'full_browser_reload',
         }
+    
+    def action_update_one2many_fields(self):
+        pass
 
 class DataBridgeFieldMapping(models.Model):
     _name = 'data.bridge.field.mapping'
