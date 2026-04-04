@@ -186,6 +186,11 @@
                                             string="Update All" class="btn-success"
                                             icon="fa-magic" style="min-width: 130px;"
                                             invisible="is_update_all_clicked or is_update_normal_clicked"/>
+                                    <!-- <button name="action_update_all" type="object" 
+                                            string="Update All" class="btn-success"
+                                            icon="fa-magic" style="min-width: 130px;"
+                                            /> -->
+
                                     <button name="action_invisible_btn" type="object" 
                                             string=" " class="btn-link text-white bg-white"
                                             style="pointer-events: none; cursor: default; border: none; min-width: 50px;"/>
@@ -203,11 +208,11 @@
                                     <button name="action_update_many2one_fields" type="object" 
                                             string="Update M2O" class="btn-info"
                                             icon="fa-link" style="min-width: 130px;"
-                                            invisible="is_update_all_clicked or is_update_m2o_clicked"/>
+                                            />
                                     <button name="action_update_many2many_fields" type="object" 
                                             string="Update M2M" class="btn-warning"
                                             icon="fa-link" style="min-width: 130px;"
-                                            invisible="is_update_all_clicked or is_update_m2m_clicked"/>
+                                            />
                                             
 
                                 </list>

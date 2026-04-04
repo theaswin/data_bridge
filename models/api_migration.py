@@ -306,10 +306,9 @@ class ApiMigration(models.Model):
                 'message': _('Field mappings have been automatically updated where matches were found.'),
                 'type': 'success',
                 'sticky': False,
+                'next': {'type': 'ir.actions.client', 'tag': 'full_browser_reload'},
             }
         }
-
-
 
     def action_try_map(self):
         pass
@@ -734,7 +733,8 @@ class MigratorMigrator(models.Model):
                     'title': 'Batch Completed',
                     'message': f'Successfully migrated {count} records.',
                     'type': 'success',
-                }
+                    'next': {'type': 'ir.actions.client', 'tag': 'full_browser_reload'},
+                },
             }
 
         except Exception as e:
@@ -939,7 +939,8 @@ class MigratorMigrator(models.Model):
                     f'{skipped_not_found} not found'
                 ),
                 'type': 'success',
-            }
+                'next': {'type': 'ir.actions.client', 'tag': 'full_browser_reload'},
+            },
         }
 
     def action_update_many2many_fields(self):
@@ -1125,7 +1126,8 @@ class MigratorMigrator(models.Model):
                     f'{skipped_not_found} items not found/skipped'
                 ),
                 'type': 'success',
-            }
+                'next': {'type': 'ir.actions.client', 'tag': 'full_browser_reload'},
+            },
         }
 
     def action_update_all(self):
@@ -1149,11 +1151,15 @@ class MigratorMigrator(models.Model):
                 'title': 'All Updates Completed ✅',
                 'message': 'Successfully processed normal fields, Many2one, and Many2many components.',
                 'type': 'success',
-            }
+                'next': {'type': 'ir.actions.client', 'tag': 'full_browser_reload'},
+            },
         }
 
     def action_invisible_btn(self):
-        pass
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'full_browser_reload',
+        }
 
 class DataBridgeFieldMapping(models.Model):
     _name = 'data.bridge.field.mapping'

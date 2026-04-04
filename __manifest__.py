@@ -39,14 +39,18 @@ Key Features:
     'author': 'Your Company',
     'website': 'https://www.yourcompany.com',
     'license': 'LGPL-3',
-    'depends': ['base', 'mail'],
+    'depends': ['base', 'mail', 'web'],
     'data': [
         'security/ir.model.access.csv',
         'views/api_migration_views.xml',
         'views/migrator_views.xml',
         'views/menu_views.xml',
     ],
-    'assets': {},
+    'assets': {
+        'web.assets_backend': [
+            'data_bridge/static/src/js/reload.js',
+        ],
+    },
     'installable': True,
     'application': True,
     'auto_install': False,
