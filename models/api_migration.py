@@ -15,10 +15,6 @@ class ApiMigration(models.Model):
     _name = 'data.bridge.api.migration'
     _description = 'API Migration from Old ERP'
     _order = 'create_date desc'
-    
-    _sql_constraints = [
-        ('destination_model_uniq', 'unique(destination_model_id)', 'The Destination Model must be unique!')
-    ]
 
     name = fields.Char(string='Migration Name', readonly=True,copy=False)
 
@@ -205,6 +201,19 @@ class ApiMigration(models.Model):
     def action_test_connection(self):
         """Test connection to the old ERP."""
         self.ensure_one()
+        
+        # Check for duplicate destination model
+        if self.destination_model_id:
+            duplicate = self.search([
+                ('destination_model_id', '=', self.destination_model_id.id),
+                ('id', '!=', self.id)
+            ], limit=1)
+            if duplicate:
+                raise UserError(_(
+                    'The Destination Model "%(model)s" is already being used in another migration (%(migration)s).',
+                    model=self.destination_model_id.display_name,
+                    migration=duplicate.name
+                ))
         
         try:
             common, models_proxy = self._get_xmlrpc_connection()
@@ -507,6 +516,7 @@ class MigratorMigrator(models.Model):
     def action_update_normal(self):
         """Execute the migration for this specific batch."""
         self.ensure_one()
+        _logger.info(">>> Starting Normal Migration for Batch %s (Model: %s)", self.batch, self.migration_id.destination_model_id.name)
         self.is_update_normal_clicked = True
         migration = self.migration_id
 
@@ -550,6 +560,7 @@ class MigratorMigrator(models.Model):
             uid = migration.erp_uid
 
             domain = safe_eval(migration.domain_filter or '[]')
+            _logger.info("Fetching record IDs from source model %s with domain %s", migration.source_model, domain)
 
             ids = models_proxy.execute_kw(
                 migration.erp_db, uid, migration.erp_password,
@@ -559,8 +570,11 @@ class MigratorMigrator(models.Model):
             )
 
             if not ids:
+                _logger.info("No records found to migrate for batch %s", self.batch)
                 self.is_done = True
                 return
+            
+            _logger.info("Found %s records to fetch from old ERP.", len(ids))
 
             # ----------------------------------------
             # ✅ FETCH RECORDS
@@ -672,29 +686,52 @@ class MigratorMigrator(models.Model):
             # ✅ BULK CREATE
             # ----------------------------------------
             if vals_list:
+                _logger.info("Attempting bulk creation of %s records in destination model %s...", len(vals_list), dest_model_name)
                 try:
-                    # Use context to disable heavy triggers
-                    new_records = DestModel.with_context(
-                        tracking_disable=True,
-                        mail_notrack=True,
-                        mail_create_nolog=True,
-                        import_file=True
-                    ).create(vals_list)
-                    
-                    # Update Map & Stats
-                    for i, new_rec in enumerate(new_records):
-                        old_id = old_ids_in_batch[i]
-                        partner_map[old_id] = new_rec.id
-                    
-                    count = len(new_records)
-                    migration.migrated_records += count
+                    with self.env.cr.savepoint():
+                        # Use context to disable heavy triggers
+                        new_records = DestModel.with_context(
+                            tracking_disable=True,
+                            mail_notrack=True,
+                            mail_create_nolog=True,
+                            import_file=True
+                        ).create(vals_list)
+                        
+                        # Update Map & Stats
+                        for i, new_rec in enumerate(new_records):
+                            old_id = old_ids_in_batch[i]
+                            partner_map[old_id] = new_rec.id
+                        
+                        count = len(new_records)
+                        migration.migrated_records += count
+                        _logger.info("Successfully bulk migrated %s records for batch %s.", count, self.batch)
 
                 except Exception as e:
-                    print(f"❌ Bulk creation failed: {e}")
-                    # Fallback to individual create if bulk fails (optional, but safer for now)
-                    if not migration.skip_errors:
-                        raise UserError(f"Bulk Migration Error: {str(e)}")
-                    migration.failed_records += len(vals_list)
+                    _logger.info("❌ Bulk creation failed: %s. Falling back to individual creation...", e)
+                    print(f"❌ Bulk creation failed: {e}. Falling back to individual creation...")
+                    
+                    for i, individual_vals in enumerate(vals_list):
+                        old_id = old_ids_in_batch[i]
+                        try:
+                            with self.env.cr.savepoint():
+                                # Attempt individual create
+                                new_rec = DestModel.with_context(
+                                    tracking_disable=True,
+                                    mail_notrack=True,
+                                    mail_create_nolog=True,
+                                    import_file=True
+                                ).create([individual_vals])
+                                
+                                partner_map[old_id] = new_rec.id
+                                migration.migrated_records += 1
+                                count += 1
+                                _logger.info("[%s/%s] Successfully migrated record ID %s", count, len(vals_list), old_id)
+                        except Exception as rec_e:
+                            migration.failed_records += 1
+                            error_msg = f"Record ID {old_id} in Batch {self.batch} failed: {str(rec_e)}\n"
+                            _logger.info("❌ [%s/%s] %s", count + 1, len(vals_list), error_msg.strip())
+                            migration.notes = (migration.notes or '') + error_msg
+                            print(f"❌ {error_msg}")
 
             # ----------------------------------------
             # ✅ FINAL
@@ -719,6 +756,8 @@ class MigratorMigrator(models.Model):
 
     def action_update_many2one_fields(self):
         """Update Many2one fields safely (DO NOT overwrite existing values)"""
+        self.ensure_one()
+        _logger.info(">>> Starting Many2one Update for Batch %s (Model: %s)", self.batch, self.migration_id.destination_model_id.name)
         self.is_update_m2o_clicked = True
         if self.migration_id.state != 'running':
             self.migration_id.state = 'running'
@@ -767,7 +806,10 @@ class MigratorMigrator(models.Model):
         ], offset=self.offset, limit=self.limit, order='id asc')
 
         if not local_parents:
+            _logger.info("No local records found in this batch range for %s", self.batch)
             return self._notify_reload("No local records found in this batch range.")
+        
+        _logger.info("Processing %s local records to find matching Many2one values from source ERP.", len(local_parents))
 
         # ----------------------------------------
         # 🔍 BATCH SEARCH/READ SOURCE PARENTS
@@ -780,7 +822,10 @@ class MigratorMigrator(models.Model):
         )
 
         if not source_parent_ids:
+            _logger.info("No matching records found in source ERP for batch %s", self.batch)
             return self._notify_reload("No matching records found in source ERP.")
+        
+        _logger.info("Found %s matching records in source ERP. Fetching Many2one data...", len(source_parent_ids))
 
         # Bulk read source data
         source_parents_data = models_proxy.execute_kw(
@@ -857,7 +902,10 @@ class MigratorMigrator(models.Model):
                         no_store_function=True
                     ).write(update_vals)
                     updated += 1
+                    if updated % 10 == 0:
+                        _logger.info("Updated %s/%s records with Many2one data...", updated, len(local_parents))
                 except Exception as e:
+                    _logger.error("❌ Error updating M2O for %s: %s", rec.name, e)
                     print(f"❌ Error updating M2O for {rec.name}: {e}")
 
         # ----------------------------------------
@@ -880,6 +928,8 @@ class MigratorMigrator(models.Model):
 
     def action_update_many2many_fields(self):
         """Update Many2many fields safely (ADD to existing values)"""
+        self.ensure_one()
+        _logger.info(">>> Starting Many2many Update for Batch %s (Model: %s)", self.batch, self.migration_id.destination_model_id.name)
         self.is_update_m2m_clicked = True
         if self.migration_id.state != 'running':
             self.migration_id.state = 'running'
@@ -939,7 +989,10 @@ class MigratorMigrator(models.Model):
         )
 
         if not source_parent_ids:
+            _logger.info("No matching records found in source ERP for batch %s", self.batch)
             return self._notify_reload("No matching records found in source ERP.")
+        
+        _logger.info("Found %s matching records in source ERP. Fetching Many2many data...", len(source_parent_ids))
 
         # Bulk read source data (M2M fields)
         source_parents_data = models_proxy.execute_kw(
@@ -1020,7 +1073,10 @@ class MigratorMigrator(models.Model):
                         no_store_function=True
                     ).write(update_vals)
                     updated += 1
+                    if updated % 10 == 0:
+                        _logger.info("Updated %s/%s records with Many2many data...", updated, len(local_parents))
                 except Exception as e:
+                    _logger.error("❌ Error updating M2M for %s: %s", rec.name, e)
                     print(f"❌ Error updating M2M for {rec.name}: {e}")
 
         # ----------------------------------------
@@ -1040,6 +1096,7 @@ class MigratorMigrator(models.Model):
     def action_update_all(self):
         """Execute normal update, Many2one update, and Many2many update in sequence."""
         self.ensure_one()
+        _logger.info(">>> Starting FULL UPDATE for Batch %s (Model: %s)", self.batch, self.migration_id.destination_model_id.name)
         self.is_update_all_clicked = True
         
         # 1. Normal Update (Fields without relations)
@@ -1070,6 +1127,8 @@ class MigratorMigrator(models.Model):
     
     def action_update_one2many_fields(self):
         """Update One2many fields in batch (Better and Faster method)"""
+        self.ensure_one()
+        _logger.info(">>> Starting One2many Update for Batch %s (Model: %s)", self.batch, self.migration_id.destination_model_id.name)
         self.is_update_o2m_clicked = True
         if self.migration_id.state != 'running':
             self.migration_id.state = 'running'
@@ -1117,7 +1176,10 @@ class MigratorMigrator(models.Model):
         )
 
         if not source_parent_ids:
+            _logger.info("No matching records found in source ERP for batch %s", self.batch)
             return self._notify_reload("No matching records found in source ERP.")
+        
+        _logger.info("Found %s matching records in source ERP. Fetching One2many data...", len(source_parent_ids))
 
         source_parents_data = models_proxy.execute_kw(
             erp_db, uid, erp_password,

@@ -56,16 +56,16 @@
                     <group>
                         <group string="Old ERP Connection">
                             <field name="erp_url" placeholder="https://old-erp.example.com"
-                                   widget="url" readonly="state == 'ready'"/>
-                            <field name="erp_db" placeholder="old_database" readonly="state == 'ready'"  />
-                            <field name="erp_username" placeholder="admin@example.com" readonly="state == 'ready'"/>
-                            <field name="erp_password" password="True" readonly="state == 'ready'"/>
+                                   widget="url" readonly="not (state == 'draft' or state == 'connected')"/>
+                            <field name="erp_db" placeholder="old_database" readonly="not (state == 'draft' or state == 'connected')"  />
+                            <field name="erp_username" placeholder="admin@example.com" readonly="not (state == 'draft' or state == 'connected')"/>
+                            <field name="erp_password" password="True" readonly="not (state == 'draft' or state == 'connected')"/>
                             <field name="erp_uid" invisible="erp_uid == 0"/>
                         </group>
                         <group string="Model Configuration">
-                            <field name="source_model" placeholder="res.partner" readonly="state == 'ready'"    />
-                            <field name="destination_model_id" required = "1" readonly="state == 'ready'"/>
-                            <field name="domain_filter" placeholder="[('active', '=', True)]" readonly="state == 'ready'"/>
+                            <field name="source_model" placeholder="res.partner" readonly="not (state == 'draft' or state == 'connected')"    />
+                            <field name="destination_model_id" required = "1" readonly="not (state == 'draft' or state == 'connected')"/>
+                            <field name="domain_filter" placeholder="[('active', '=', True)]" readonly="not (state == 'draft' or state == 'connected')"/>
                             <div colspan="2" class="alert alert-warning mt-2 mb-0" role="alert">
                                  <i class="fa fa-exclamation-triangle"/> Apply a domain filter to exclude unnecessary records and optimize the migration process.
                             </div>
@@ -74,11 +74,11 @@
                     
                     <group>
                         <group string="Options">
-                            <field name="batch_size" readonly="state == 'ready'"/>
+                            <field name="batch_size" readonly="not (state == 'draft' or state == 'connected')"/>
                             <!-- <field name="offset"/> -->
 
-                            <field name="skip_errors" readonly="state == 'ready'"/>
-                            <field name="enable_create" readonly="state == 'ready'"/>
+                            <field name="skip_errors" readonly="not (state == 'draft' or state == 'connected')"/>
+                            <field name="enable_create" readonly="not (state == 'draft' or state == 'connected')"/>
                         </group>
                         <group string="Statistics" invisible="not total_source_records">
                             <field name="total_source_records"/>
