@@ -15,8 +15,19 @@ class ApiMigration(models.Model):
     _name = 'data.bridge.api.migration'
     _description = 'API Migration from Old ERP'
     _order = 'create_date desc'
+    
+    _sql_constraints = [
+        ('destination_model_uniq', 'unique(destination_model_id)', 'The Destination Model must be unique!')
+    ]
 
-    name = fields.Char(string='Migration Name', required=True)
+    name = fields.Char(string='Migration Name', readonly=True,copy=False)
+
+    @api.model_create_multi
+    def create(self, vals_list):
+        for vals in vals_list:
+            if not vals.get('name') or vals.get('name') == _('New'):
+                vals['name'] = self.env['ir.sequence'].next_by_code('data.bridge.api.migration') or _('New')
+        return super(ApiMigration, self).create(vals_list)
     
     # Connection Details
     erp_url = fields.Char(
@@ -594,6 +605,8 @@ class MigratorMigrator(models.Model):
             # ----------------------------------------
             # 🔁 LOOP RECORDS
             # ----------------------------------------
+            vals_list = []
+            old_ids_in_batch = []
             for vals in records:
                 old_id = vals.get('id')
                 new_vals = {}
@@ -606,7 +619,6 @@ class MigratorMigrator(models.Model):
                     src_value = vals[src_field]
                     dest_field = info['dest_field']
                     src_type = info['src_type']
-                    src_value = source_vals.get(src_field)
                     if src_value is False or src_value is None:
                         continue
 

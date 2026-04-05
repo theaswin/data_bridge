@@ -42,6 +42,7 @@ Key Features:
     'depends': ['base', 'mail', 'web'],
     'data': [
         'security/ir.model.access.csv',
+        'data/ir_sequence_data.xml',
         'views/api_migration_views.xml',
         'views/migrator_views.xml',
         'views/menu_views.xml',

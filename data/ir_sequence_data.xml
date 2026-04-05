@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+        <record id="seq_api_migration" model="ir.sequence">
+            <field name="name">API Migration Sequence</field>
+            <field name="code">data.bridge.api.migration</field>
+            <field name="prefix">MIG/%(year)s/</field>
+            <field name="padding">4</field>
+            <field name="company_id" eval="False"/>
+        </record>
+    </data>
+</odoo>

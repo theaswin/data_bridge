@@ -77,8 +77,8 @@
                             <field name="batch_size" readonly="state == 'ready'"/>
                             <!-- <field name="offset"/> -->
 
-                            <field name="skip_errors" readonly="0"/>
-                            <field name="enable_create" readonly="0"/>
+                            <field name="skip_errors" readonly="state == 'ready'"/>
+                            <field name="enable_create" readonly="state == 'ready'"/>
                         </group>
                         <group string="Statistics" invisible="not total_source_records">
                             <field name="total_source_records"/>
@@ -217,7 +217,7 @@
                                     <button name="action_update_one2many_fields" type="object" 
                                             string="Update O2M" class="btn-secondary"
                                             icon="fa-list" style="min-width: 130px;"
-                                            invisible="is_update_all_clicked or is_update_o2m_clicked"/>
+                                            />
 
                                 </list>
                             </field>
