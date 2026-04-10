@@ -174,6 +174,7 @@
                                     <field name="data_range"/>
                                     <field name="limit"/>
                                     <field name="offset"/>
+                                    <field name="migrated_record_ids" optional="hide"/>
                                     <field name="duration" widget="float_time"/>
                                     <field name="progress" widget="progressbar"/>
                                     <field name="is_done" column_invisible="True"/>
@@ -217,8 +218,11 @@
                                     <button name="action_update_one2many_fields" type="object" 
                                             string="Update O2M" class="btn-secondary"
                                             icon="fa-list" style="min-width: 130px;"
-                                            />
-
+                                            invisible="is_update_o2m_clicked"/>
+                                    <button name="action_view_details" type="object" 
+                                            string="See All" class="btn-primary"
+                                            icon="fa-list" style="min-width: 100px;"
+                                            invisible="not migrated_record_ids"/>
                                 </list>
                             </field>
                         </page>

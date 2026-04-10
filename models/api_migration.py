@@ -317,7 +317,6 @@ class ApiMigration(models.Model):
             raise UserError(_("Please specify a destination model first."))
         
         self.field_mapping_ids.action_auto_update()
-        
         return {
             'type': 'ir.actions.client',
             'tag': 'display_notification',
@@ -512,6 +511,7 @@ class MigratorMigrator(models.Model):
     is_update_m2o_clicked = fields.Boolean(string='Update M2O Clicked', default=False, copy=False)
     is_update_m2m_clicked = fields.Boolean(string='Update M2M Clicked', default=False, copy=False)
     is_update_o2m_clicked = fields.Boolean(string='Update O2M Clicked', default=False, copy=False)
+    migrated_record_ids = fields.Text(string='Migrated Record IDs', copy=False)
 
     def action_update_normal(self):
         """Execute the migration for this specific batch."""
@@ -739,6 +739,13 @@ class MigratorMigrator(models.Model):
             self.duration = time.time() - start_time
             self.progress = (count / self.limit) * 100 if self.limit else 0.0
             self.is_done = True
+
+            # 🔥 STORE CREATION DETAILS
+            if partner_map:
+                new_ids = [str(vid) for vid in partner_map.values()]
+                existing_ids = (self.migrated_record_ids or '').split(',')
+                all_ids = list(set(filter(None, existing_ids + new_ids)))
+                self.write({'migrated_record_ids': ','.join(all_ids)})
 
             return {
                 'type': 'ir.actions.client',
@@ -1157,15 +1164,17 @@ class MigratorMigrator(models.Model):
         o2m_field_map = {m.field_name: m.restore_to_id.name for m in o2m_mappings}
         source_o2m_fields = list(o2m_field_map.keys())
 
-        # 3. Get Local Parents in this Batch
+        # 3. Get Local Parents in this Batch (Only those migrated in this batch)
+        if not self.migrated_record_ids:
+            return self._notify_reload("No records migrated yet in this batch. Update Normal first.")
+
+        parent_ids = [int(rid) for rid in self.migrated_record_ids.split(',') if rid]
         dest_model_name = migration.destination_model_id.model
         DestModel = self.env[dest_model_name].sudo()
-        local_parents = DestModel.search([
-            ('name', '!=', False)
-        ], offset=self.offset, limit=self.limit, order='id asc')
+        local_parents = DestModel.browse(parent_ids).filtered(lambda r: r.exists() and r.name)
 
         if not local_parents:
-            return self._notify_reload("No local records found in this batch range.")
+            return self._notify_reload("No valid local records found for the migrated IDs.")
 
         # 4. Batch Search/Read Source Parents
         parent_names = local_parents.mapped('name')
@@ -1258,9 +1267,10 @@ class MigratorMigrator(models.Model):
 
             # 8. ORM Bulk Create
             if child_vals_list:
-                LocalChildModel.with_context(tracking_disable=True).create(child_vals_list)
-                total_children_created += len(child_vals_list)
+                new_children = LocalChildModel.with_context(tracking_disable=True).create(child_vals_list)
+                total_children_created += len(new_children)
 
+        self.is_update_o2m_clicked = True
         return self._notify_reload(f"Batch O2M completed. Created {total_children_created} child records.")
 
     def _notify_reload(self, message):
@@ -1273,6 +1283,24 @@ class MigratorMigrator(models.Model):
                 'type': 'success',
                 'next': {'type': 'ir.actions.client', 'tag': 'full_browser_reload'},
             }
+        }
+
+    def action_view_details(self):
+        """Open the list of migrated records for this batch."""
+        self.ensure_one()
+        if not self.migrated_record_ids:
+            return self._notify_reload(_("No records migrated yet."))
+            
+        record_ids = [int(rid) for rid in self.migrated_record_ids.split(',') if rid]
+        dest_model_name = self.migration_id.destination_model_id.model or self.migration_id.destination_model
+        
+        return {
+            'name': _('Migrated Records'),
+            'type': 'ir.actions.act_window',
+            'res_model': dest_model_name,
+            'view_mode': 'list,form',
+            'domain': [('id', 'in', record_ids)],
+            'target': 'current',
         }
 
 class DataBridgeFieldMapping(models.Model):

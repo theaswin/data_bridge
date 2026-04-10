@@ -14,6 +14,7 @@
                 <field name="duration" widget="float_time"/>
                 <field name="progress" widget="progressbar" 
                                        options="{'editable': false}"/>
+                <button name="action_view_details" string="See Values" type="object" class="btn-primary" icon="fa-list"/>
             </list>
         </field>
     </record>
@@ -24,6 +25,9 @@
         <field name="model">migrator.migrator</field>
         <field name="arch" type="xml">
             <form string="Batch Detail">
+                <header>
+                    <button name="action_view_details" string="See Values" type="object" class="btn-primary" icon="fa-list" invisible="not migrated_record_ids"/>
+                </header>
                 <sheet >
                     <group>
                         <group>
