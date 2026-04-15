@@ -46,6 +46,7 @@ Key Features:
         'views/api_migration_views.xml',
         'views/migrator_views.xml',
         'views/menu_views.xml',
+        'wizard/o2m_migration_wizard_view.xml',
     ],
     'assets': {
         'web.assets_backend': [

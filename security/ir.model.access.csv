@@ -2,3 +2,5 @@ id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
 access_data_bridge_api_migration_system,data.bridge.api.migration.system,model_data_bridge_api_migration,base.group_system,1,1,1,1
 access_migrator_migrator,migrator.migrator,model_migrator_migrator,,1,1,1,1
 access_data_bridge_field_mapping,data.bridge.field.mapping,model_data_bridge_field_mapping,,1,1,1,1
+access_data_bridge_o2m_wizard,data.bridge.o2m.wizard,model_data_bridge_o2m_wizard,,1,1,1,1
+access_data_bridge_o2m_wizard_line,data_bridge_o2m_wizard_line,model_data_bridge_o2m_wizard_line,,1,1,1,1

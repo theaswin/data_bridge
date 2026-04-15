@@ -21,10 +21,10 @@
                             string="Ready" class="btn-primary"
                             invisible="state != 'connected'"
                             icon="fa-check"/>
-                    <!-- <button name="action_analyze_fields" type="object"
+                    <button name="reset_to_connected" type="object"
                             string="Re-Analyze Fields" class="btn-secondary"
-                            invisible="state not in ['ready', 'running', 'done']"
-                            icon="fa-refresh"/> -->
+                            invisible="state not in ['running']"
+                            icon="fa-refresh"/>
                     <button name="load_steps"
                             type="object"
                             string="Load Steps"
@@ -188,10 +188,6 @@
                                             string="Update All" class="btn-success"
                                             icon="fa-magic" style="min-width: 130px;"
                                             invisible="is_update_all_clicked or is_update_normal_clicked"/>
-                                    <!-- <button name="action_update_all" type="object" 
-                                            string="Update All" class="btn-success"
-                                            icon="fa-magic" style="min-width: 130px;"
-                                            /> -->
 
                                     <button name="action_invisible_btn" type="object" 
                                             string=" " class="btn-link text-white bg-white"
@@ -206,19 +202,20 @@
                                     <button name="action_update_normal" type="object" 
                                             string="Update Normal" class="btn-primary"
                                             icon="fa-play" style="min-width: 130px;"
-                                            invisible="is_update_all_clicked or is_update_normal_clicked"/>
+                                            invisible="is_update_all_clicked or is_update_normal_clicked or '1'=='1'"/>
                                     <button name="action_update_many2one_fields" type="object" 
                                             string="Update M2O" class="btn-info"
                                             icon="fa-link" style="min-width: 130px;"
-                                            invisible="is_update_all_clicked or is_update_m2o_clicked"/>
+                                            invisible="is_update_all_clicked or is_update_m2o_clicked or '1'=='1'"/>
                                     <button name="action_update_many2many_fields" type="object" 
                                             string="Update M2M" class="btn-warning"
                                             icon="fa-link" style="min-width: 130px;"
-                                            invisible="is_update_all_clicked or is_update_m2m_clicked"/>
+                                            invisible="is_update_all_clicked or is_update_m2m_clicked or '1'=='1'"/>
                                     <button name="action_update_one2many_fields" type="object" 
-                                            string="Update O2M" class="btn-secondary"
+                                            string="Update O2M's" class="btn-secondary"
                                             icon="fa-list" style="min-width: 130px;"
                                             invisible="is_update_o2m_clicked"/>
+
                                     <button name="action_view_details" type="object" 
                                             string="See All" class="btn-primary"
                                             icon="fa-list" style="min-width: 100px;"
@@ -338,7 +335,7 @@
                 Connect to your old Odoo ERP and migrate data to your current instance.
             </p>
             <p class="text-muted">
-                <i class="fa fa-info-circle"/> Many2many and Many2one fields are automatically excluded.
+                <i class="fa fa-info-circle"/> Many2many and One2many fields are automatically excluded.
             </p>
         </field>
     </record>

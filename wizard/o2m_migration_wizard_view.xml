@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_data_bridge_o2m_wizard_form" model="ir.ui.view">
+        <field name="name">data.bridge.o2m.wizard.form</field>
+        <field name="model">data.bridge.o2m.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Dynamic One2many Migration">
+                <sheet>
+                    <div class="oe_title">
+                        <h1>Dynamic O2M Mapping</h1>
+                    </div>
+                    <group>
+                        <group string="Parent Context">
+                            <field name="migrator_id" invisible="1"/>
+                            <field name="migration_id" invisible="1"/>
+                            <field name="source_model_display" readonly="1"/>
+                            <field name="migrated_record_ids_display" readonly="1"/>
+                        </group>
+                        <group string="Field Configuration">
+                            <field name="o2m_field_id" options="{'no_create': True, 'no_open': True}"/>
+                            <field name="destination_model" readonly="1"/>
+                            <field name="enable_create" />
+                        </group>
+                    </group>
+                    
+                    <div class="mb-3" invisible="not source_o2m_field or not o2m_field_id">
+                        <button name="action_fetch_fields" string="Refetch &amp; Auto-map Fields" 
+                                type="object" class="btn-info" icon="fa-refresh"/>
+                        <span class="text-muted ml-2">Fetches field names from the old ERP and matches by name.</span>
+                    </div>
+
+                    <div class="mb-3" invisible="not o2m_field_id">
+                        <button name="action_fetch_fields_by_dest_model" 
+                                string="Fetch by Destination Model Name" 
+                                type="object" class="btn-warning" icon="fa-database"/>
+                        <span class="text-muted ml-2">Fetches fields using the destination model name as the source name in Old ERP.</span>
+                    </div>
+
+                    <notebook>
+                        <page string="Field Mappings" name="mappings">
+                            <field name="field_mapping_o2m">
+                                <list editable="bottom">
+                                    <field name="child_model_id" column_invisible="True"/>
+                                    <field name="source_field" placeholder="Source field name in ERP" readonly="1"/>
+                                    <field name="dest_field_id" 
+                                           domain="[('model_id', '=', child_model_id)]"
+                                           options="{'no_create': True, 'no_open': True}"/>
+                                </list>
+                            </field>
+                        </page>
+                    </notebook>
+                </sheet>
+                <footer>
+                    <button name="action_update" string="Update" type="object" class="btn-primary"/>
+                    <button string="Cancel" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+</odoo>

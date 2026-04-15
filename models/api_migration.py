@@ -4,9 +4,9 @@ import time
 from odoo import models, fields, api, _
 from odoo.exceptions import UserError, ValidationError
 from odoo.tools.safe_eval import safe_eval
-
+from collections import defaultdict
 _logger = logging.getLogger(__name__)
-
+import json
 # Connection timeout in seconds
 CONNECTION_TIMEOUT = 120
 
@@ -74,12 +74,13 @@ class ApiMigration(models.Model):
         string='Batch Size', default=500, copy=False,
         help='Records to process per batch (recommended: 500-1000 for large datasets)')
     skip_errors = fields.Boolean(
-        string='Skip Errors & Continue', default=False, copy=False,
-        help='Continue migration even if some records fail')
+        string='Skip Errors & Missing', default=False, copy=False,
+        help='Continue migration even if some records fail or relations are missing')
     
     enable_create = fields.Boolean(
         string='Enable Create', default=False, copy=False,
-        help='Enable create mode for migration')
+        help='while migrating Many2one or Many2Many data , If the data is not there \
+         will create with the string where obtained from old ERP')
     
     # Status
     state = fields.Selection([
@@ -149,6 +150,9 @@ class ApiMigration(models.Model):
         'ir.model', string='Destination Model', copy=False)
 
         
+    def reset_to_connected(self):
+        for rec in self:
+            rec.state ='connected'
 
     @api.depends('migrator_ids.duration')
     def _compute_migration_duration(self):
@@ -389,7 +393,7 @@ class ApiMigration(models.Model):
                     reason = "System field"
                 elif f_name not in dest_fields:
                     reason = "Missing in destination"
-                elif f_type in ('many2one', 'one2many', 'many2many', 'reference'):
+                elif f_type in ('one2many', 'many2many', 'reference'):
                     reason = f"Relational field ({f_type})"
                 elif not is_stored:
                     reason = "Not stored in source"
@@ -513,6 +517,24 @@ class MigratorMigrator(models.Model):
     is_update_o2m_clicked = fields.Boolean(string='Update O2M Clicked', default=False, copy=False)
     migrated_record_ids = fields.Text(string='Migrated Record IDs', copy=False)
 
+    def _ensure_marshalable(self, data):
+        """Recursively convert defaultdict and unsafe types"""
+
+        # ✅ CRITICAL FIX
+        if isinstance(data, defaultdict):
+            data = dict(data)
+
+        if isinstance(data, dict):
+            return {k: self._ensure_marshalable(v) for k, v in data.items()}
+
+        elif isinstance(data, list):
+            return [self._ensure_marshalable(v) for v in data]
+
+        elif isinstance(data, tuple):
+            return tuple(self._ensure_marshalable(v) for v in data)
+
+        return data
+
     def action_update_normal(self):
         """Execute the migration for this specific batch."""
         self.ensure_one()
@@ -537,7 +559,7 @@ class MigratorMigrator(models.Model):
             # ✅ FIELD MAPPING
             # ----------------------------------------
             field_mappings = migration.field_mapping_ids.filtered(
-                lambda m: m.restore_to_id and m.field_type not in ['many2one', 'many2many', 'one2many']
+                lambda m: m.restore_to_id and m.field_type not in ['many2many', 'one2many']
             )
 
             if not field_mappings:
@@ -562,6 +584,7 @@ class MigratorMigrator(models.Model):
             domain = safe_eval(migration.domain_filter or '[]')
             _logger.info("Fetching record IDs from source model %s with domain %s", migration.source_model, domain)
 
+            _logger.info("Calling execute_kw search on source_model %s...", migration.source_model)
             ids = models_proxy.execute_kw(
                 migration.erp_db, uid, migration.erp_password,
                 migration.source_model, 'search',
@@ -574,7 +597,7 @@ class MigratorMigrator(models.Model):
                 self.is_done = True
                 return
             
-            _logger.info("Found %s records to fetch from old ERP.", len(ids))
+            _logger.info("Found %s records to fetch from old ERP. Calling execute_kw read...", len(ids))
 
             # ----------------------------------------
             # ✅ FETCH RECORDS
@@ -660,7 +683,26 @@ class MigratorMigrator(models.Model):
                             continue
 
                         # 🔥 GENERIC MATCH
-                        rel_rec = self.env[related_model].sudo().search([('name', '=', m2o_name)], limit=1)
+                        RelatedModel = self.env[related_model].sudo()
+                        search_domain = []
+                        
+                        # Use _rec_name or fallback to common field names
+                        possible_name_fields = [RelatedModel._rec_name, 'name', 'display_name']
+                        seen_fields = set()
+                        for f_name in possible_name_fields:
+                            if f_name and f_name in RelatedModel._fields and f_name not in seen_fields:
+                                seen_fields.add(f_name)
+                                part = (f_name, '=', m2o_name)
+                                if search_domain:
+                                    search_domain = ['|'] + search_domain + [part]
+                                else:
+                                    search_domain.append(part)
+                        
+                        if not search_domain:
+                            search_domain = [('display_name', '=', m2o_name)]
+                        
+                        _logger.debug("Searching for Many2one %s with domain %s", related_model, search_domain)
+                        rel_rec = RelatedModel.search(search_domain, limit=1)
                         if rel_rec:
                             new_vals[dest_field] = rel_rec.id
                         continue
@@ -710,6 +752,7 @@ class MigratorMigrator(models.Model):
                     _logger.info("❌ Bulk creation failed: %s. Falling back to individual creation...", e)
                     print(f"❌ Bulk creation failed: {e}. Falling back to individual creation...")
                     
+                    batch_errors = []
                     for i, individual_vals in enumerate(vals_list):
                         old_id = old_ids_in_batch[i]
                         try:
@@ -728,10 +771,15 @@ class MigratorMigrator(models.Model):
                                 _logger.info("[%s/%s] Successfully migrated record ID %s", count, len(vals_list), old_id)
                         except Exception as rec_e:
                             migration.failed_records += 1
-                            error_msg = f"Record ID {old_id} in Batch {self.batch} failed: {str(rec_e)}\n"
-                            _logger.info("❌ [%s/%s] %s", count + 1, len(vals_list), error_msg.strip())
-                            migration.notes = (migration.notes or '') + error_msg
+                            error_msg = f"Record ID {old_id} in Batch {self.batch} failed: {str(rec_e)}"
+                            _logger.error("❌ [%s/%s] %s", count + 1, len(vals_list), error_msg)
+                            migration.notes = (migration.notes or '') + error_msg + "\n"
+                            batch_errors.append(error_msg)
                             print(f"❌ {error_msg}")
+
+                    if batch_errors and not migration.skip_errors:
+                        error_summary = "\n".join(batch_errors)
+                        raise ValidationError(_("Migration failed for some records in Batch %s:\n\n%s") % (self.batch, error_summary))
 
             # ----------------------------------------
             # ✅ FINAL
@@ -742,12 +790,12 @@ class MigratorMigrator(models.Model):
 
             # 🔥 STORE CREATION DETAILS
             if partner_map:
-                new_ids = [str(vid) for vid in partner_map.values()]
-                existing_ids = (self.migrated_record_ids or '').split(',')
-                all_ids = list(set(filter(None, existing_ids + new_ids)))
-                self.write({'migrated_record_ids': ','.join(all_ids)})
+                new_mappings = [f"[{new_id},{old_id}]" for old_id, new_id in partner_map.items()]
+                existing_mappings = (self.migrated_record_ids or '').split(',')
+                all_mappings = list(set(filter(None, existing_mappings + new_mappings)))
+                self.write({'migrated_record_ids': ','.join(all_mappings)})
 
-            return {
+            return self._ensure_marshalable({
                 'type': 'ir.actions.client',
                 'tag': 'display_notification',
                 'params': {
@@ -756,10 +804,11 @@ class MigratorMigrator(models.Model):
                     'type': 'success',
                     'next': {'type': 'ir.actions.client', 'tag': 'full_browser_reload'},
                 },
-            }
+            })
 
         except Exception as e:
-            raise UserError(f"Migration Error: {str(e)}")
+            _logger.error("Migration Error inside action_update_normal: %s", str(e))
+            raise UserError(f"Migration Error (Normal Update): {str(e)}")
 
     def action_update_many2one_fields(self):
         """Update Many2one fields safely (DO NOT overwrite existing values)"""
@@ -794,7 +843,8 @@ class MigratorMigrator(models.Model):
         )
 
         if not field_mappings:
-            raise Exception("No Many2one fields configured")
+            _logger.info("No Many2one fields configured, skipping.")
+            return
 
         field_map = {
             m.field_name: m.restore_to_id.name
@@ -822,6 +872,7 @@ class MigratorMigrator(models.Model):
         # 🔍 BATCH SEARCH/READ SOURCE PARENTS
         # ----------------------------------------
         parent_names = local_parents.mapped('name')
+        _logger.info("Calling execute_kw search on %s for Many2one parents...", source_model)
         source_parent_ids = models_proxy.execute_kw(
             migration.erp_db, uid, migration.erp_password,
             source_model, 'search',
@@ -832,7 +883,7 @@ class MigratorMigrator(models.Model):
             _logger.info("No matching records found in source ERP for batch %s", self.batch)
             return self._notify_reload("No matching records found in source ERP.")
         
-        _logger.info("Found %s matching records in source ERP. Fetching Many2one data...", len(source_parent_ids))
+        _logger.info("Found %s matching records in source ERP. Calling execute_kw read for Many2one data...", len(source_parent_ids))
 
         # Bulk read source data
         source_parents_data = models_proxy.execute_kw(
@@ -883,9 +934,22 @@ class MigratorMigrator(models.Model):
                     rel_id = relation_cache[cache_key]
                 else:
                     RelatedModel = self.env[related_model].sudo()
-                    rel_rec = RelatedModel.search([
-                        '|', ('name', '=', m2o_name), ('display_name', '=', m2o_name)
-                    ], limit=1)
+                    search_domain = []
+                    possible_name_fields = [RelatedModel._rec_name, 'name', 'display_name']
+                    seen_fields = set()
+                    for f_name in possible_name_fields:
+                        if f_name and f_name in RelatedModel._fields and f_name not in seen_fields:
+                            seen_fields.add(f_name)
+                            part = (f_name, '=', m2o_name)
+                            if search_domain:
+                                search_domain = ['|'] + search_domain + [part]
+                            else:
+                                search_domain.append(part)
+                    
+                    if not search_domain:
+                        search_domain = [('display_name', '=', m2o_name)]
+
+                    rel_rec = RelatedModel.search(search_domain, limit=1)
                     rel_id = rel_rec.id if rel_rec else False
                     
                     if not rel_id and migration.enable_create:
@@ -898,6 +962,9 @@ class MigratorMigrator(models.Model):
                     update_vals[dest_field] = rel_id
                 else:
                     skipped_not_found += 1
+                    if migration.skip_errors:
+                        msg = f"Batch {self.batch}: {rec.name} -> Missing {related_model} '{m2o_name}'\n"
+                        migration.notes = (migration.notes or '') + msg
 
             if update_vals:
                 try:
@@ -918,7 +985,7 @@ class MigratorMigrator(models.Model):
         # ----------------------------------------
         # ✅ RESULT NOTIFICATION
         # ----------------------------------------
-        return {
+        return self._ensure_marshalable({
             'type': 'ir.actions.client',
             'tag': 'display_notification',
             'params': {
@@ -931,7 +998,7 @@ class MigratorMigrator(models.Model):
                 'type': 'success',
                 'next': {'type': 'ir.actions.client', 'tag': 'full_browser_reload'},
             },
-        }
+        })
 
     def action_update_many2many_fields(self):
         """Update Many2many fields safely (ADD to existing values)"""
@@ -965,7 +1032,8 @@ class MigratorMigrator(models.Model):
         )
 
         if not field_mappings:
-            raise Exception("No Many2many fields configured")
+            _logger.info("No Many2many fields configured, skipping.")
+            return
 
         field_map = {
             m.field_name: m.restore_to_id.name
@@ -989,6 +1057,7 @@ class MigratorMigrator(models.Model):
         # 🔍 BATCH SEARCH/READ SOURCE PARENTS
         # ----------------------------------------
         parent_names = local_parents.mapped('name')
+        _logger.info("Calling execute_kw search on %s for Many2many parents...", source_model)
         source_parent_ids = models_proxy.execute_kw(
             migration.erp_db, uid, migration.erp_password,
             source_model, 'search',
@@ -999,7 +1068,7 @@ class MigratorMigrator(models.Model):
             _logger.info("No matching records found in source ERP for batch %s", self.batch)
             return self._notify_reload("No matching records found in source ERP.")
         
-        _logger.info("Found %s matching records in source ERP. Fetching Many2many data...", len(source_parent_ids))
+        _logger.info("Found %s matching records in source ERP. Calling execute_kw read for Many2many data...", len(source_parent_ids))
 
         # Bulk read source data (M2M fields)
         source_parents_data = models_proxy.execute_kw(
@@ -1039,6 +1108,7 @@ class MigratorMigrator(models.Model):
                 
                 # Fetch target record names if we only have IDs
                 target_ids = src_m2m_data
+                _logger.info("Calling execute_kw read on related model %s for M2M targets %s...", related_model, target_ids)
                 target_records_data = models_proxy.execute_kw(
                     migration.erp_db, uid, migration.erp_password,
                     related_model, 'read',
@@ -1065,6 +1135,9 @@ class MigratorMigrator(models.Model):
                         local_target_ids.append(l_id)
                     else:
                         skipped_not_found += 1
+                        if migration.skip_errors:
+                            msg = f"Batch {self.batch}: {rec.name} -> Missing M2M target {related_model} '{t_name}'\n"
+                            migration.notes = (migration.notes or '') + msg
 
                 if local_target_ids:
                     # Odoo M2M update: (4, id) to add links
@@ -1089,7 +1162,7 @@ class MigratorMigrator(models.Model):
         # ----------------------------------------
         # ✅ RESULT NOTIFICATION
         # ----------------------------------------
-        return {
+        return self._ensure_marshalable({
             'type': 'ir.actions.client',
             'tag': 'display_notification',
             'params': {
@@ -1098,7 +1171,7 @@ class MigratorMigrator(models.Model):
                 'type': 'success',
                 'next': {'type': 'ir.actions.client', 'tag': 'full_browser_reload'},
             },
-        }
+        })
 
     def action_update_all(self):
         """Execute normal update, Many2one update, and Many2many update in sequence."""
@@ -1115,7 +1188,7 @@ class MigratorMigrator(models.Model):
         # 3. Many2many Update
         self.action_update_many2many_fields()
         
-        return {
+        return self._ensure_marshalable({
             'type': 'ir.actions.client',
             'tag': 'display_notification',
             'params': {
@@ -1124,28 +1197,32 @@ class MigratorMigrator(models.Model):
                 'type': 'success',
                 'next': {'type': 'ir.actions.client', 'tag': 'full_browser_reload'},
             },
-        }
+        })
 
     def action_invisible_btn(self):
-        return {
-            'type': 'ir.actions.client',
-            'tag': 'full_browser_reload',
-        }
-    
+        pass
+        
     def action_update_one2many_fields(self):
-        """Update One2many fields in batch (Better and Faster method)"""
+        """Open dynamic wizard to select which One2many field to update and map its fields."""
         self.ensure_one()
-        _logger.info(">>> Starting One2many Update for Batch %s (Model: %s)", self.batch, self.migration_id.destination_model_id.name)
+        return {
+            'name': _('Dynamic One2many Migration'),
+            'type': 'ir.actions.act_window',
+            'res_model': 'data.bridge.o2m.wizard',
+            'view_mode': 'form',
+            'target': 'new',
+            'context': {
+                'default_migrator_id': self.id,
+            }
+        }
+
+    def _run_o2m_migration(self, src_o2m, dest_o2m_name, mappings, source_child_model=False):
+        """Update a specific One2many field using dynamic mappings from the wizard."""
+        self.ensure_one()
+        _logger.info(">>> Starting Dynamic One2many Update for Batch %s (Source: %s -> Dest: %s)", self.batch, src_o2m, dest_o2m_name)
+        
         self.is_update_o2m_clicked = True
-        if self.migration_id.state != 'running':
-            self.migration_id.state = 'running'
-
-        if not self.is_update_normal_clicked and not self.is_update_all_clicked:
-            raise UserError("You can update One2many fields only after performing a Normal Update.")
-
         migration = self.migration_id
-        if not migration:
-            return
 
         # 1. XMLRPC Connection
         common, models_proxy = migration._get_xmlrpc_connection()
@@ -1154,127 +1231,226 @@ class MigratorMigrator(models.Model):
         erp_db = migration.erp_db
         erp_password = migration.erp_password
 
-        # 2. Identify O2M Mappings
-        o2m_mappings = migration.field_mapping_ids.filtered(
-            lambda m: m.restore_to_id and m.field_type == 'one2many'
-        )
-        if not o2m_mappings:
-            return self._notify_reload("No One2many fields configured")
+        # 2. Field Analysis & Validation
+        # mappings is [(src_field, dest_field_name), ...]
+        field_map = {src: dest for src, dest in mappings}
+        source_o2m_fields = list(field_map.keys())
 
-        o2m_field_map = {m.field_name: m.restore_to_id.name for m in o2m_mappings}
-        source_o2m_fields = list(o2m_field_map.keys())
-
-        # 3. Get Local Parents in this Batch (Only those migrated in this batch)
+        # Verify Source O2M field exists on source parent model
+        try:
+            source_fields_info = models_proxy.execute_kw(
+                erp_db, uid, erp_password,
+                source_model, 'fields_get',
+                [src_o2m],
+                {'attributes': ['type']}
+            )
+            if not source_fields_info or src_o2m not in source_fields_info:
+                 return self._notify_reload(f"Field '{src_o2m}' not found on source model '{source_model}' in ERP. Please check the 'Source O2M Field' name in wizard.")
+        except Exception as e:
+             _logger.warning("Could not validate source O2M field: %s", e)
+             # We proceed but we might fail later with the ValueError the user saw.
+             # Actually, if we're here, we're likely going to fail. 
+             # Let's be more descriptive if it fails later.
+        
+        # 3. Parse [new_id,old_id] pairs
         if not self.migrated_record_ids:
             return self._notify_reload("No records migrated yet in this batch. Update Normal first.")
 
-        parent_ids = [int(rid) for rid in self.migrated_record_ids.split(',') if rid]
+        # Build map: source_id -> local_id
+        source_id_to_local_id = {}
+        raw_entries = self.migrated_record_ids.split('],[')
+        for entry in raw_entries:
+            clean_entry = entry.replace('[', '').replace(']', '')
+            if clean_entry:
+                parts = clean_entry.split(',')
+                if len(parts) >= 2:
+                    try:
+                        l_id = int(parts[0])
+                        s_id = int(parts[1])
+                        source_id_to_local_id[s_id] = l_id
+                    except:
+                        continue
+
+        if not source_id_to_local_id:
+            return self._notify_reload("No valid ID mappings found in this batch.")
+
         dest_model_name = migration.destination_model_id.model
         DestModel = self.env[dest_model_name].sudo()
-        local_parents = DestModel.browse(parent_ids).filtered(lambda r: r.exists() and r.name)
+        local_parents = DestModel.browse(source_id_to_local_id.values()).filtered(lambda r: r.exists())
 
         if not local_parents:
             return self._notify_reload("No valid local records found for the migrated IDs.")
 
-        # 4. Batch Search/Read Source Parents
-        parent_names = local_parents.mapped('name')
-        source_parent_ids = models_proxy.execute_kw(
-            erp_db, uid, erp_password,
-            source_model, 'search',
-            [[('name', 'in', parent_names)]]
-        )
-
-        if not source_parent_ids:
-            _logger.info("No matching records found in source ERP for batch %s", self.batch)
-            return self._notify_reload("No matching records found in source ERP.")
-        
-        _logger.info("Found %s matching records in source ERP. Fetching One2many data...", len(source_parent_ids))
+        # 4. Fetch Source Parents from Old ERP using IDs
+        source_parent_ids = list(source_id_to_local_id.keys())
+        _logger.info("Fetching One2many data for %s from source records %s...", src_o2m, source_parent_ids)
 
         source_parents_data = models_proxy.execute_kw(
             erp_db, uid, erp_password,
             source_model, 'read',
             [source_parent_ids],
-            {'fields': ['name'] + source_o2m_fields}
+            {'fields': ['id', src_o2m]}
         )
-
-        # 5. Build Map: Source ID -> Local Record
-        name_to_local = {p.name: p for p in local_parents}
-        source_id_to_local_id = {}
-        for s_parent in source_parents_data:
-            l_parent = name_to_local.get(s_parent['name'])
-            if l_parent:
-                source_id_to_local_id[s_parent['id']] = l_parent.id
 
         total_children_created = 0
 
-        # 6. Process each O2M Field
-        for src_o2m, dest_o2m in o2m_field_map.items():
-            ChildModel = DestModel._fields[dest_o2m].comodel_name
-            LocalChildModel = self.env[ChildModel].sudo()
-            
-            # Find the inverse Many2one field
-            inverse_field = DestModel._fields[dest_o2m].inverse_name
-            if not inverse_field:
-                continue
+        # 6. Process the O2M Field
+        DestChildModelName = DestModel._fields[dest_o2m_name].comodel_name
+        LocalChildModel = self.env[DestChildModelName].sudo()
+        SrcChildModel = source_child_model or DestChildModelName
+        
+        # Find the inverse Many2one field
+        inverse_field = DestModel._fields[dest_o2m_name].inverse_name
+        if not inverse_field:
+             return self._notify_reload(f"Inverse field not found for {dest_o2m_name}")
 
-            # Collect all child IDs for this O2M field across all parents
-            all_source_child_ids = []
-            child_to_parent_map = {} # source_child_id -> local_parent_id
-            
-            for s_parent in source_parents_data:
-                s_child_ids = s_parent.get(src_o2m)
-                if s_child_ids:
-                    all_source_child_ids.extend(s_child_ids)
-                    l_parent_id = source_id_to_local_id.get(s_parent['id'])
-                    for sc_id in s_child_ids:
-                        child_to_parent_map[sc_id] = l_parent_id
+        # Collect all child IDs for this O2M field across all parents
+        all_source_child_ids = []
+        child_to_parent_map = {} # source_child_id -> local_parent_id
+        
+        for s_parent in source_parents_data:
+            s_child_ids = s_parent.get(src_o2m)
+            if s_child_ids and isinstance(s_child_ids, list):
+                all_source_child_ids.extend(s_child_ids)
+                l_parent_id = source_id_to_local_id.get(s_parent['id'])
+                for sc_id in s_child_ids:
+                    child_to_parent_map[sc_id] = l_parent_id
 
-            if not all_source_child_ids:
-                continue
+        if not all_source_child_ids:
+             return self._notify_reload("No child records found to migrate.")
 
-            # Bulk Read Source Children
-            source_children_data = models_proxy.execute_kw(
-                erp_db, uid, erp_password,
-                ChildModel, 'read',
-                [all_source_child_ids],
-                {'fields': []} # Fetch all
-            )
+        # Bulk Read Source Children from SrcChildModel
+        source_children_data = models_proxy.execute_kw(
+            erp_db, uid, erp_password,
+            SrcChildModel, 'read',
+            [all_source_child_ids],
+            {'fields': source_o2m_fields}
+        )
 
-            # 7. Prepare Bulk Creation
-            child_vals_list = []
-            child_field_names = LocalChildModel._fields.keys()
+        # 7. Prepare Bulk Creation
+        child_vals_list = []
+        relation_cache = {} # (model, name) -> id
+        child_fields_obj = LocalChildModel._fields
 
-            for s_child in source_children_data:
-                child_vals = {}
-                # Auto-match fields by name
-                for field_name, value in s_child.items():
-                    if field_name == 'id' or field_name == inverse_field:
-                        continue
-                    if field_name in child_field_names:
-                        # Basic type handling: Odoo XMLRPC returns [id, name] for M2O
-                        if isinstance(value, (list, tuple)) and len(value) == 2:
-                            # It's a Many2one, we need to handle it or skip for now
-                            # For simplicity in this "Better/Faster" method, we skip relations in children
-                            # unless they are basic types. But we MUST set the parent relation.
-                            continue
-                        child_vals[field_name] = value
+        for s_child in source_children_data:
+            child_vals = {}
+            # Use mappings from wizard
+            for s_f, d_f in field_map.items():
+                value = s_child.get(s_f)
+                if value is None or value is False:
+                    continue
                 
-                # Set the Parent Relation
-                local_p_id = child_to_parent_map.get(s_child['id'])
-                if local_p_id:
-                    child_vals[inverse_field] = local_p_id
-                    child_vals_list.append(child_vals)
+                field_obj = child_fields_obj.get(d_f)
+                if not field_obj:
+                    continue
 
-            # 8. ORM Bulk Create
-            if child_vals_list:
-                new_children = LocalChildModel.with_context(tracking_disable=True).create(child_vals_list)
-                total_children_created += len(new_children)
+                # 🔥 MANY2ONE HANDLING
+                if field_obj.type == 'many2one':
+                    m2o_name = value[1] if isinstance(value, (list, tuple)) and len(value) >= 2 else (value.strip() if isinstance(value, str) else False)
+                    if not m2o_name:
+                        continue
+                    
+                    related_model = field_obj.comodel_name
+                    cache_key = (related_model, m2o_name)
+                    
+                    if cache_key in relation_cache:
+                        rel_id = relation_cache[cache_key]
+                    else:
+                        RelatedModel = self.env[related_model].sudo()
+                        rel_rec = RelatedModel.search(['|', ('name', '=', m2o_name), ('display_name', '=', m2o_name)], limit=1)
+                        rel_id = rel_rec.id if rel_rec else False
+                        
+                        if not rel_id and migration.enable_create:
+                            rel_rec = RelatedModel.create({'name': m2o_name})
+                            rel_id = rel_rec.id
+                        
+                        relation_cache[cache_key] = rel_id
+                    
+                    if rel_id:
+                        child_vals[d_f] = rel_id
 
-        self.is_update_o2m_clicked = True
-        return self._notify_reload(f"Batch O2M completed. Created {total_children_created} child records.")
+                # 🔥 MANY2MANY HANDLING
+                elif field_obj.type == 'many2many':
+                    if not isinstance(value, list):
+                        continue
+                    
+                    related_model = field_obj.comodel_name
+                    RelatedModel = self.env[related_model].sudo()
+                    
+                    # Read target names from ERP
+                    try:
+                        target_data = models_proxy.execute_kw(
+                            erp_db, uid, erp_password,
+                            related_model, 'read',
+                            [value],
+                            {'fields': ['name', 'display_name']}
+                        )
+                    except:
+                        continue
+                    
+                    local_ids = []
+                    for t_vals in target_data:
+                        t_name = t_vals.get('display_name') or t_vals.get('name')
+                        if not t_name: continue
+                        
+                        cache_key = (related_model, t_name)
+                        if cache_key in relation_cache:
+                            l_id = relation_cache[cache_key]
+                        else:
+                            rel_rec = RelatedModel.search(['|', ('name', '=', t_name), ('display_name', '=', t_name)], limit=1)
+                            l_id = rel_rec.id if rel_rec else False
+                            
+                            if not l_id and migration.enable_create:
+                                rel_rec = RelatedModel.create({'name': t_name})
+                                l_id = rel_rec.id
+                            
+                            relation_cache[cache_key] = l_id
+                        
+                        if l_id:
+                            local_ids.append(l_id)
+                    
+                    if local_ids:
+                        child_vals[d_f] = [(6, 0, local_ids)]
+
+                # ✅ NORMAL FIELD
+                else:
+                    if isinstance(value, (list, tuple)) and len(value) == 2:
+                        child_vals[d_f] = value[1]
+                    else:
+                        child_vals[d_f] = value
+            
+            # Set the Parent Relation
+            local_p_id = child_to_parent_map.get(s_child['id'])
+            if local_p_id:
+                child_vals[inverse_field] = local_p_id
+                child_vals_list.append(child_vals)
+
+        # 8. ORM Create
+        if child_vals_list:
+            try:
+                with self.env.cr.savepoint():
+                    new_children = LocalChildModel.with_context(tracking_disable=True).create(child_vals_list)
+                    total_children_created = len(new_children)
+            except Exception as e:
+                _logger.info("❌ Bulk O2M creation failed for %s: %s. Falling back to individual creation...", dest_o2m_name, e)
+                total_children_created = 0
+                for c_vals in child_vals_list:
+                    try:
+                        with self.env.cr.savepoint():
+                            LocalChildModel.with_context(tracking_disable=True).create([c_vals])
+                            total_children_created += 1
+                    except Exception as rec_e:
+                        if migration.skip_errors:
+                            error_msg = f"Batch {self.batch}: O2M {dest_o2m_name} child creation failed: {str(rec_e)}\n"
+                            migration.notes = (migration.notes or '') + error_msg
+                            continue
+                        else:
+                            raise ValidationError(_("O2M Migration failed for a child record in %s field:\n%s") % (dest_o2m_name, str(rec_e)))
+
+        return self._notify_reload(f"Dynamic O2M completed for {dest_o2m_name}. Created {total_children_created} child records.")
 
     def _notify_reload(self, message):
-        return {
+        return self._safe_return({
             'type': 'ir.actions.client',
             'tag': 'display_notification',
             'params': {
@@ -1283,7 +1459,11 @@ class MigratorMigrator(models.Model):
                 'type': 'success',
                 'next': {'type': 'ir.actions.client', 'tag': 'full_browser_reload'},
             }
-        }
+        })
+    def _safe_return(self, data):
+        """Final XML-RPC safe return"""
+        return json.loads(json.dumps(self._ensure_marshalable(data)))
+
 
     def action_view_details(self):
         """Open the list of migrated records for this batch."""
@@ -1291,7 +1471,20 @@ class MigratorMigrator(models.Model):
         if not self.migrated_record_ids:
             return self._notify_reload(_("No records migrated yet."))
             
-        record_ids = [int(rid) for rid in self.migrated_record_ids.split(',') if rid]
+        # Parse [new_id,old_id],[new_id,old_id]... format
+        record_ids = []
+        if self.migrated_record_ids:
+            raw_entries = self.migrated_record_ids.split('],[')
+            for entry in raw_entries:
+                clean_entry = entry.replace('[', '').replace(']', '')
+                if clean_entry:
+                    parts = clean_entry.split(',')
+                    if parts:
+                        try:
+                            record_ids.append(int(parts[0]))
+                        except:
+                            continue
+
         dest_model_name = self.migration_id.destination_model_id.model or self.migration_id.destination_model
         
         return {
@@ -1306,6 +1499,7 @@ class MigratorMigrator(models.Model):
 class DataBridgeFieldMapping(models.Model):
     _name = 'data.bridge.field.mapping'
     _description = 'Field Mapping for Migration'
+    _rec_name = 'field_label'
 
     migration_id = fields.Many2one(
         'data.bridge.api.migration', string='Migration',
