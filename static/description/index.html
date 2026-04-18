@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Data Bridge API Migration Tool | documentation</title>
+    <style>
+        :root {
+            --primary: #00438B;
+            --secondary: #0056b3;
+            --dark: #212529;
+            --light: #f8f9fa;
+            --accent: #ffc107;
+            --success: #28a745;
+            --glass: rgba(255, 255, 255, 0.9);
+            --shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.15);
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            color: var(--dark);
+            line-height: 1.6;
+            margin: 0;
+            padding: 0;
+            background-color: #ffffff;
+        }
+
+        .container {
+            max-width: 1140px;
+            margin: 0 auto;
+            padding: 0 1.5rem;
+        }
+
+        /* Hero Section */
+        .hero {
+            padding: 5rem 0;
+            text-align: center;
+            background: linear-gradient(135deg, #ffffff 0%, #f0f4f8 100%);
+            border-bottom: 1px solid #e1e8ed;
+        }
+
+        .hero h1 {
+            color: var(--primary);
+            font-size: 3.5rem;
+            font-weight: 800;
+            margin-bottom: 1rem;
+            letter-spacing: -1px;
+        }
+
+        .hero h1 span {
+            font-weight: 300;
+        }
+
+        .hero p {
+            font-size: 1.25rem;
+            color: #6c757d;
+            max-width: 700px;
+            margin: 0 auto 2rem;
+        }
+
+        .hero-icon {
+            width: 180px;
+            height: 180px;
+            margin: 2rem auto;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #fff;
+            border-radius: 30px;
+            box-shadow: var(--shadow);
+            padding: 2rem;
+        }
+
+        /* Section Styling */
+        section {
+            padding: 5rem 0;
+        }
+
+        .section-title {
+            text-align: center;
+            margin-bottom: 4rem;
+        }
+
+        .section-title h2 {
+            font-size: 2.5rem;
+            color: var(--dark);
+            margin-bottom: 1rem;
+        }
+
+        .section-title .hr {
+            width: 80px;
+            height: 6px;
+            background: var(--primary);
+            margin: 0 auto;
+            border-radius: 3px;
+        }
+
+        /* Steps Layout */
+        .step-card {
+            background: var(--glass);
+            border-radius: 20px;
+            padding: 2.5rem;
+            margin-bottom: 3rem;
+            box-shadow: var(--shadow);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            display: flex;
+            gap: 2rem;
+            align-items: flex-start;
+            transition: transform 0.3s ease;
+        }
+
+        .step-card:hover {
+            transform: translateY(-5px);
+        }
+
+        .step-number {
+            background: var(--primary);
+            color: white;
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 1.5rem;
+            flex-shrink: 0;
+        }
+
+        .step-content {
+            flex-grow: 1;
+        }
+
+        .step-content h3 {
+            margin-top: 0;
+            font-size: 1.8rem;
+            color: var(--primary);
+        }
+
+        .screenshot-container {
+            margin-top: 2rem;
+            border-radius: 12px;
+            overflow: hidden;
+            border: 4px solid #f1f3f5;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+        }
+
+        .screenshot-placeholder {
+            background: #e9ecef;
+            height: 300px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #adb5bd;
+            font-style: italic;
+        }
+
+        /* Field Table */
+        .field-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 1.5rem;
+            margin-top: 2rem;
+        }
+
+        .field-item {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 12px;
+            border-left: 5px solid var(--primary);
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.02);
+        }
+
+        .field-item b {
+            display: block;
+            color: var(--primary);
+            margin-bottom: 0.5rem;
+            font-size: 1.1rem;
+        }
+
+        /* Badges */
+        .badge {
+            display: inline-block;
+            padding: 0.5rem 1rem;
+            border-radius: 50px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            background: var(--light);
+            color: var(--primary);
+            margin-right: 0.5rem;
+        }
+
+        .badge-success {
+            background: #e7f5ea;
+            color: var(--success);
+        }
+
+        .badge-warning {
+            background: #fff4e6;
+            color: #fd7e14;
+        }
+
+        /* Footer */
+        footer {
+            background: var(--dark);
+            color: white;
+            padding: 4rem 0;
+            text-align: center;
+        }
+
+        footer a {
+            color: #fff;
+            text-decoration: none;
+            opacity: 0.8;
+        }
+
+        footer a:hover {
+            opacity: 1;
+        }
+
+        @media (max-width: 768px) {
+            .hero h1 {
+                font-size: 2.5rem;
+            }
+
+            .step-card {
+                flex-direction: column;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <header class="hero">
+        <div class="container">
+            <div class="hero-icon">
+                <img src="icon.png" alt="Data Bridge Icon" style="max-width: 100%; height: auto;">
+            </div>
+            <h1>Data Bridge <span>API Migration</span></h1>
+            <p>Seamlessly migrate data between Odoo instances using high-performance XML-RPC synchronization with
+                dynamic field mapping.</p>
+        </div>
+    </header>
+
+    <section id="workflow">
+        <div class="container">
+            <div class="section-title">
+                <h2>Migration Workflow</h2>
+                <div class="hr"></div>
+            </div>
+
+            <!-- STEP 1 -->
+            <div class="step-card">
+                <div class="step-number">1</div>
+                <div class="step-content">
+                    <h3>Connection Setup</h3>
+                    <p>Enter the credentials and connection details of the source ERP instance. Click the <b>Test
+                            Connection</b> button to verify the link. A success message indicates that the systems are
+                        ready to communicate.</p>
+                    <div class="screenshot-container">
+                        <img src="images/01.png" alt="Connection Setup" style="width: 100%;">
+                    </div>
+                </div>
+            </div>
+
+            <!-- STEP 2 -->
+            <div class="step-card">
+                <div class="step-number">2</div>
+                <div class="step-content">
+                    <h3>Model Analysis</h3>
+                    <p>Once connected, refresh the screen and click <b>Get Model Data & Analyze</b>. This fetches the
+                        source model schema and prepares the mapping environment.</p>
+
+                    <div class="field-grid">
+                        <div class="field-item">
+                            <b>Old ERP URL</b>
+                            Address of the source Odoo instance (e.g., http://localhost:8069).
+                        </div>
+                        <div class="field-item">
+                            <b>Database Name</b>
+                            The exact name of the source database.
+                        </div>
+                        <div class="field-item">
+                            <b>Credentials</b>
+                            Admin username and password for authentication.
+                        </div>
+                        <div class="field-item">
+                            <b>Source Model</b>
+                            The technical name of the model you are migrating from.
+                        </div>
+                        <div class="field-item">
+                            <b>Domain Filter</b>
+                            Optimization tool to exclude unnecessary records (e.g., [('state', '=', 'done')]).
+                        </div>
+                        <div class="field-item">
+                            <b>Batch Size</b>
+                            Control how many records are processed per request (Default: 500).
+                        </div>
+                    </div>
+
+                    <div class="screenshot-container">
+                        <img src="images/02.png" alt="Model Analysis" style="width: 100%;">
+                    </div>
+                </div>
+            </div>
+
+            <!-- STEP 3 -->
+            <div class="step-card">
+                <div class="step-number">3</div>
+                <div class="step-content">
+                    <h3>Field Mapping</h3>
+                    <p>Navigate to the <b>Field Mapping</b> tab. Map the source fields from the old ERP to the
+                        corresponding destination fields in your current system. Use the <span
+                            class="badge badge-success">Auto Update Mappings</span> button to automatically match fields
+                        with identical technical names. Once satisfied, click the <b>Ready</b> button to lock the
+                        configuration.</p>
+                    <div class="screenshot-container">
+                        <img src="images/03.png" alt="Field Mapping" style="width: 100%;">
+                    </div>
+                </div>
+            </div>
+
+            <!-- STEP 4 -->
+            <div class="step-card">
+                <div class="step-number">4</div>
+                <div class="step-content">
+                    <h3>Batch Processing & Statistics</h3>
+                    <p>Switch to the <b>Batches/Migrators</b> page. This view lists prepared data segments and provides
+                        real-time <b>Statistics</b> including Total Source Records, Total Batches, and Duration. Click
+                        <b>Update All</b> to begin migrating all standard fields (excluding One2many relationships).</p>
+                    <div class="screenshot-container">
+                        <img src="images/09.png" alt="Batch Processing" style="width: 100%;">
+                    </div>
+                </div>
+            </div>
+
+            <!-- STEP 5 -->
+            <div class="step-card">
+                <div class="step-number">5</div>
+                <div class="step-content">
+                    <h3>Dynamic One2many Migration</h3>
+                    <p>To migrate child records, click the dedicated button. In the resulting wizard, specify the
+                        <b>Destination Field</b>. Use the <span class="badge badge-warning">Fetch by Destination</span>
+                        button to automatically retrieve compatible fields from the source instance.</p>
+                    <div class="screenshot-container">
+                        <img src="images/04.png" alt="One2many Wizard" style="width: 100%;">
+                    </div>
+                </div>
+            </div>
+
+            <!-- STEP 6 -->
+            <div class="step-card">
+                <div class="step-number">6</div>
+                <div class="step-content">
+                    <h3>Final Synchronization</h3>
+                    <p>Perform the final field mapping within the One2many wizard. Click <b>Update</b> to finalize and
+                        create all related child records in your destination model.</p>
+                    <div class="screenshot-container">
+                        <img src="images/05.png" alt="Final Update" style="width: 100%;">
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </section>
+
+    <footer>
+        <div class="container">
+            <h3>Contact Us</h3>
+            <p>
+                Phone: <a href="tel:+918593972889">+91 8593972889</a><br>
+                Email: <a href="mailto:contact@zbeanztech.com">contact@zbeanztech.com</a><br>
+                LinkedIn: <a href="https://www.linkedin.com/company/zesty-beanz-technologies">Zesty Beanz
+                    Technologies</a>
+            </p>
+            <p style="margin-top: 2rem; font-size: 0.8rem; opacity: 0.5;">&copy; 2026 Zesty Beanz Technologies. All
+                Rights Reserved.</p>
+        </div>
+    </footer>
+
+</body>
+
+</html>

@@ -12,8 +12,6 @@
                 <field name="limit"/>
                 <field name="offset"/>
                 <field name="duration" widget="float_time"/>
-                <field name="progress" widget="progressbar" 
-                                       options="{'editable': false}"/>
                 <button name="action_view_details" string="See Values" type="object" class="btn-primary" icon="fa-list"/>
             </list>
         </field>
